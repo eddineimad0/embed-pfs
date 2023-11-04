@@ -1,18 +1,27 @@
 # Verbose flag for debuging
-ifneq($(V),1)
+ifneq ($(V),1)
 	Q := @
 endif
 
+ifneq ($(OS),Windows_NT)
+	CLEAN := unix_clean
+	MKDIR := mkdir -p
+else
+	CLEAN := win_clean
+	MKDIR := mkdir
+endif
 
-SRC_DIR = ./src
+CODE_DIRS = firmware
 INC_DIR = ./include
-INTERM_DIR = ./out/interm
-OUT_DIR = ./out/bin
+CFILES = $(foreach D,$(CODE_DIRS),$(wildcard $(D)/*.c))
+OBJ_DIR = out/obj
+OBJS = $(foreach F,$(notdir $(patsubst %.c,%.o,$(CFILES))),$(OBJ_DIR)/$(F))
+BIN_DIR = out/bin
 
 BINARY = firmware
 
 ########################################################################
-# Device specific
+# Device specifics
 
 # LIBNAME = opencm3_stm32f1
 # DEFS += -DSTM32F1
@@ -28,32 +37,30 @@ ARCH_FLAGS = -mthumb -mcpu=cortex-m3 $(FPU_FLAGS)
 
 #######################################################################
 # Include
-DEFS += -I$(INC_DIR)
+# DEFS += -I$(INC_DIR)
 
 #######################################################################
 # Compiler
 
 PREFIX ?= arm-none-eabi-
-
 CC := $(PREFIX)gcc
 AS := $(PREFIX)as
+LD := $(PREFIX)gcc
 # STFLASH := $(shell which st-flash)
-# OPT := -Os
-# DEBUG := -ggdb3
+OPT := -O0
+DEBUG := -ggdb3
 CSTD ?= -std=c99
 
 #######################################################################
 # Src files
 
-OBJS += $(INTERM_DIR)/$(BINARY).o
-CFILES = ./src/mini_test.c
 
 ######################################################################
-# C flags
+# C compiler flags
 
 CFLAGS += $(OPT) $(CSTD) $(DEBUG)
 CFLAGS += $(ARCH_FLAGS)
-CFLAGS += -Wall -Wextra -nostdlib
+CFLAGS += -Wall -Wextra -Werror
 # CFLAGS += -fno-common -ffunction-sections -fdata-sections 
 
 ###############################################################################
@@ -66,9 +73,10 @@ CFLAGS += -Wall -Wextra -nostdlib
 ###############################################################################
 # Linker flags
 #
+LDFLAGS += -nostdlib
+LDFLAGS	+= $(ARCH_FLAGS) $(DEBUG)
 # LDFLAGS		+= --static -nostartfiles
 # LDFLAGS		+= -T$(LDSCRIPT) $(LD_DIR)
-# LDFLAGS		+= $(ARCH_FLAGS) $(DEBUG)
 # LDFLAGS		+= -Wl,-Map=$(*).map -Wl,--cref
 # LDFLAGS		+= -Wl,--gc-sections
 # ifeq ($(V),99)
@@ -88,25 +96,26 @@ CFLAGS += -Wall -Wextra -nostdlib
 all: elf
 
 elf: $(BINARY).elf
-# Define a helper macro for debugging make errors online
-# you can type "make print-OPENCM3_DIR" and it will show you
-# how that ended up being resolved by all of the included
-# makefiles.
-print-%:
-	@echo $*=$($*)
+
+$(BINARY).elf: $(OBJS)
+	$(Q)$(LD) $(LDFLAGS) $(filter %.o, $^) -o $(BIN_DIR)/$@ 
 
 %.o: %.c
-	@#printf "  CC      $(*).c\n"
-	$(Q)$(CC) $(CFLAGS)  -o $(*).o -c $(*).c
+	$(Q)$(CC) $(CFLAGS)  -c $< -o $(OBJ_DIR)/$(notdir $@) 
 
 %.o: %.S
-	@#printf "  CC      $(*).S\n"
-	$(Q)$(CC) $(CFLAGS) -o $(*).o -c $(*).S
+	$(Q)$(CC) $(CFLAGS) -c $< -o $(OBJ_DIR)/$(notdir $@)
 
-clean:
+clean: $(CLEAN)
+
+win_clean:
 	@#printf "  CLEAN\n"
-	$(Q)rm  ./out/interm/*.o 
+	$(Q)del /S /Q $(BIN_DIR)\*
+	$(Q)del /S /Q $(OBJ_DIR)\*.o
 
+unix_clean:
+	$(Q)rm -rf  $(BIN_DIR)/* 
+	rm -f $(OBJ_DIR)/*.o
 
 .PHONY: clean elf
 
