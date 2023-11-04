@@ -1,7 +1,7 @@
-#ifndef __COMMON_H__
-#define __COMMON_H__
+#ifndef INC_COMMON_H__
+#define INC_COMMON_H__
 
 #include<stdint.h>
 #include<stdbool.h>
 
-#endif // !__COMMON_H__
+#endif // !INC_COMMON_H__
