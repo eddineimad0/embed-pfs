@@ -1,3 +1,4 @@
 -I./include/
--I./libs/libopencm3/include/libopencm3/
+-I./libs/libopencm3/include/
+-DSTM32F1
 -std=c99
