@@ -12,7 +12,7 @@ else
 endif
 
 CODE_DIRS = firmware
-INC_DIR = ./include
+INC_DIR = include
 OBJ_DIR = out/obj
 BIN_DIR = out/bin
 
@@ -23,7 +23,7 @@ OPENCM3_DIR = libs/libopencm3
 ########################################################################
 # Device specifics
 
-LIBNAME = libopencm3_stm32f1.a
+LIBNAME = opencm3_stm32f1
 # DEFS += -DSTM32F1
 FPU_FLAGS = -mfloat-abi=soft # Cortex-m3 has no FPU
 ARCH_FLAGS = -mthumb -mcpu=cortex-m3 $(FPU_FLAGS)
@@ -31,9 +31,9 @@ ARCH_FLAGS = -mthumb -mcpu=cortex-m3 $(FPU_FLAGS)
 #######################################################################
 # Linker
 
-# LD_SCRIPT = ./scripts/linker.ld
+LDSCRIPT = scripts/linker.ld
 LD_LIBS += -l$(LIBNAME)
-LD_DIR += -L$(OPENCM3_DIR)/lib
+LDFLAGS += -L$(OPENCM3_DIR)/lib
 
 #######################################################################
 # Include
@@ -81,8 +81,8 @@ CPPFLAGS	+= $(DEFS)
 LDFLAGS += -nostdlib
 LDFLAGS	+= $(ARCH_FLAGS) $(DEBUG)
 # LDFLAGS		+= --static -nostartfiles
-# LDFLAGS		+= -T$(LDSCRIPT) $(LD_DIR)
-# LDFLAGS		+= -Wl,-Map=$(*).map -Wl,--cref
+LDFLAGS	+= -T$(LDSCRIPT)
+LDFLAGS	+= -Wl,-Map=$(BIN_DIR)/$(*).map -Wl,--cref
 # LDFLAGS		+= -Wl,--gc-sections
 # ifeq ($(V),99)
 # LDFLAGS		+= -Wl,--print-gc-sections
@@ -98,15 +98,17 @@ LDFLAGS	+= $(ARCH_FLAGS) $(DEBUG)
 ###############################################################################
 
 
-all: elf
-
-%.bin: %.elf
-	$(Q)$(OBJCOPY) -Obinary $< $@
+all: elf bin
 
 elf: $(BINARY).elf
+bin: $(BINARY).bin
 
-$(BINARY).elf: $(OBJS) $(OPENCM3_DIR)/lib/$(LIBNAME) Makefile
-	$(Q)$(LD) $(LDFLAGS) $(filter %.o, $^) -o $(BIN_DIR)/$@ 
+%.bin: %.elf
+	$(Q)$(OBJCOPY) -Obinary $(BIN_DIR)/$< $(BIN_DIR)/$@
+
+
+%.elf: $(OBJS) $(OPENCM3_DIR)/lib/lib$(LIBNAME).a Makefile
+	$(Q)$(LD) $(LDFLAGS) $(LD_LIBS) $(filter %.o, $^) -o $(BIN_DIR)/$@ 
 
 %.o: %.c
 	$(Q)$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $(OBJ_DIR)/$(notdir $@) 

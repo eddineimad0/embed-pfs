@@ -5,38 +5,68 @@ MEMORY
 	SRAM 	 (rwx) : ORIGIN = 0x20000000, LENGTH = 20K
 }
 
-/* Enforce emmition of the vector table. */
-EXTERN (vector_table)
 
-/* Define the entry point of the output file. */
+/* Libopencm3 will need these */
+EXTERN (vector_table)
 ENTRY(reset_handler)
 
 /* Define sections. */
 SECTIONS
 {
     .text : {
+        *(.vectors)      /* Vector_table */
         *(.text*)	/* Program code */
-        _etext = .;
+        . = ALIGN(4);
     } >FLASH
 
     .rodata :{
         *(.rodata*)	/* Read-only data */
     } >FLASH
+    . = ALIGN(4);
+    _etext = .;
 
-    _data_loadaddr = LOADADDR(.data);
+    /* C++ Static constructors/destructors, also used for __attribute__
+	 * ((constructor)) and the likes */
+	.preinit_array : {
+		. = ALIGN(4);
+		__preinit_array_start = .;
+		KEEP (*(.preinit_array))
+		__preinit_array_end = .;
+	} >FLASH
+	.init_array : {
+		. = ALIGN(4);
+		__init_array_start = .;
+		KEEP (*(SORT(.init_array.*)))
+		KEEP (*(.init_array))
+		__init_array_end = .;
+	} >FLASH
+	.fini_array : {
+		. = ALIGN(4);
+		__fini_array_start = .;
+		KEEP (*(.fini_array))
+		KEEP (*(SORT(.fini_array.*)))
+		__fini_array_end = .;
+	} >FLASH
+
     .data :
     {
-        _sdata = .;
+        _data = .;
         *(.data*) /* Read-write initialized data */
+        . = ALIGN(4);
         _edata = .;
     } >SRAM AT> FLASH
+    _data_loadaddr = LOADADDR(.data);
 
     .bss :
     {
-        _sbss = .;
+        _bss = .;
         *(.bss*) /* Read-write zero initialized data */
+        . = ALIGN(4);
         _ebss = .;
     } >SRAM
+
+    . = ALIGN(4);
+    end = .;
 }
 
 PROVIDE(_stack = ORIGIN(SRAM) + LENGTH(SRAM));
