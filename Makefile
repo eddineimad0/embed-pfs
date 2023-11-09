@@ -5,35 +5,29 @@ endif
 
 ifneq ($(OS),Windows_NT)
 	CLEAN := unix_clean
-	MKDIR := mkdir -p
+	DIR_GUARD = mkdir -p $(@D)
 else
 	CLEAN := win_clean
-	MKDIR := mkdir
+	DIR_GUARD = if not exist $(subst /,\,$(@D)) md $(subst /,\,$(@D))
 endif
 
 CODE_DIRS = firmware
 INC_DIR = include
 OBJ_DIR = out/obj
 BIN_DIR = out/bin
+LDSCRIPT = scripts/linker.ld
 
 BINARY = firmware
 
-OPENCM3_DIR = libs/libopencm3
+OPENCM3_DIR = ./libs/libopencm3
 
 ########################################################################
 # Device specifics
 
 LIBNAME = opencm3_stm32f1
-# DEFS += -DSTM32F1
 FPU_FLAGS = -mfloat-abi=soft # Cortex-m3 has no FPU
 ARCH_FLAGS = -mthumb -mcpu=cortex-m3 $(FPU_FLAGS)
-
-#######################################################################
-# Linker
-
-LDSCRIPT = scripts/linker.ld
-LD_LIBS += -l$(LIBNAME)
-LDFLAGS += -L$(OPENCM3_DIR)/lib
+DEFS += -DSTM32F1
 
 #######################################################################
 # Include
@@ -49,7 +43,6 @@ AS := $(PREFIX)as
 LD := $(PREFIX)gcc
 OBJCOPY := $(PREFIX)objcopy
 OBJDUMP := $(PREFIX)objdump
-# STFLASH := $(shell which st-flash)
 OPT := -Os
 DEBUG := -ggdb3
 CSTD ?= -std=c99
@@ -57,7 +50,7 @@ CSTD ?= -std=c99
 #######################################################################
 # Translation units
 CFILES = $(foreach D,$(CODE_DIRS),$(wildcard $(D)/*.c))
-OBJS = $(foreach F,$(notdir $(patsubst %.c,%.o,$(CFILES))),$(OBJ_DIR)/$(F))
+OBJS = $(patsubst %.c,$(OBJ_DIR)/%.o,$(CFILES))
 
 
 ######################################################################
@@ -65,8 +58,8 @@ OBJS = $(foreach F,$(notdir $(patsubst %.c,%.o,$(CFILES))),$(OBJ_DIR)/$(F))
 
 CFLAGS += $(OPT) $(CSTD) $(DEBUG)
 CFLAGS += $(ARCH_FLAGS)
-CFLAGS += -Wall -Wextra -Werror
-# CFLAGS += -fno-common -ffunction-sections -fdata-sections 
+CFLAGS += -Wall -Wextra -Wshadow -Wredundant-decls -Werror 
+CFLAGS += -fno-common -ffunction-sections -fdata-sections 
 
 ###############################################################################
 # C preprocessor common flags
@@ -79,49 +72,52 @@ CPPFLAGS	+= $(DEFS)
 # Linker flags
 #
 LDFLAGS += -nostdlib
+LDFLAGS	+= --static -nostartfiles
 LDFLAGS	+= $(ARCH_FLAGS) $(DEBUG)
-# LDFLAGS		+= --static -nostartfiles
 LDFLAGS	+= -T$(LDSCRIPT)
-LDFLAGS	+= -Wl,-Map=$(BIN_DIR)/$(*).map -Wl,--cref
-# LDFLAGS		+= -Wl,--gc-sections
+LDFLAGS	+= -Wl,-Map=$(*).map
+LDFLAGS += -Wl,--cref
+LDFLAGS	+= -Wl,--gc-sections
 # ifeq ($(V),99)
 # LDFLAGS		+= -Wl,--print-gc-sections
 # endif
 #
 ###############################################################################
 # Used libraries
-
-# LD_LIBS		+= -Wl,--start-group -lc -lgcc -lnosys -Wl,--end-group
+LD_LIBS += -L$(OPENCM3_DIR)/lib
+LD_LIBS += -l$(LIBNAME)
+LD_LIBS	+= -Wl,--start-group -lc -lgcc -lnosys -Wl,--end-group
 
 ###############################################################################
 ###############################################################################
 ###############################################################################
+$(info [+] $(CFILES))
 
+all: bin elf 
 
-all: elf bin
+elf: $(BIN_DIR)/$(BINARY).elf
+bin: $(BIN_DIR)/$(BINARY).bin
 
-elf: $(BINARY).elf
-bin: $(BINARY).bin
+$(OBJ_DIR)/%.o:%.c
+	$(Q)$(DIR_GUARD)
+	$(Q)$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@ 
 
-%.bin: %.elf
-	$(Q)$(OBJCOPY) -Obinary $(BIN_DIR)/$< $(BIN_DIR)/$@
-
-
-%.elf: $(OBJS) $(OPENCM3_DIR)/lib/lib$(LIBNAME).a Makefile
-	$(Q)$(LD) $(LDFLAGS) $(LD_LIBS) $(filter %.o, $^) -o $(BIN_DIR)/$@ 
-
-%.o: %.c
-	$(Q)$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $(OBJ_DIR)/$(notdir $@) 
-
-%.o: %.S
+$(OBJ_DIR)/%.o:%.S
 	$(Q)$(CC) $(CFLAGS) -c $< -o $(OBJ_DIR)/$(notdir $@)
+
+%.bin:%.elf
+	$(Q)$(DIR_GUARD)
+	$(Q)$(OBJCOPY) -Obinary $< $@
+
+%.elf: $(OBJS) $(LDSCRIPT) $(OPENCM3_DIR)/lib/lib$(LIBNAME).a Makefile
+	$(Q)$(DIR_GUARD)
+	$(Q)$(LD) $(LDFLAGS) $(filter %.o, $^) $(LD_LIBS) -o $@ 
 
 clean: $(CLEAN)
 
 win_clean:
-	@#printf "  CLEAN\n"
-	$(Q)del /S /Q $(BIN_DIR)\*
-	$(Q)del /S /Q $(OBJ_DIR)\*.o
+	$(Q)if exist $(subst /,\,$(BIN_DIR)) rmdir /Q /S $(subst /,\,$(BIN_DIR))
+	$(Q)if exist $(subst /,\,$(BIN_DIR)) rmdir /Q /S $(subst /,\,$(OBJ_DIR))
 
 unix_clean:
 	$(Q)rm -rf  $(BIN_DIR)/* 

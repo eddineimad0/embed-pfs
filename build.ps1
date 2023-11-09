@@ -3,8 +3,8 @@ Set-StrictMode -Version Latest;
 function Show-Menu {
     Clear-Host
     Write-Host "================ Options ================" 
-    Write-Host "1: build binary."
-    Write-Host "2: flash."
+    Write-Host "1: Build binary."
+    Write-Host "2: ST-Link Flash."
     Write-Host "Q: Press 'Q' to quit."
 }
 
@@ -13,7 +13,7 @@ function Build-Binary{
 }
 
 function Flash-Firmware{
-    st-flash.exe;
+    st-flash.exe --reset write .\out\bin\firmware.bin 0x8000000;
 }
 
 do {

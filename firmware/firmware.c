@@ -1,37 +1,35 @@
 #include<common.h>
+#include<libopencm3/stm32/rcc.h>
+#include<libopencm3/stm32/gpio.h>
 
-/* Clock */
-#define RCC_AHB1ENR     *((volatile uint32_t*) (0x40023830))
+#define LED_PORT RCC_GPIOA
+#define LED_PIN GPIO5
+#define DELAY (74000000 / 4)
 
-/* GPIO A */
-#define GPIOA_MODER     *((volatile uint32_t*) (0x40020000))
-#define GPIOA_BSRR      *((volatile uint32_t*) (0x40020018))
-
-/* Global initialized variable */
-bool isLoop = true;
-
-void delay(void){
-    const uint32_t DELAY_MAX = 0x0000BEEF;
-    uint32_t delay_counter;
-    for(delay_counter=DELAY_MAX;delay_counter==0;delay_counter-=1){}
+static void gpio_setup(void){
+    rcc_periph_clock_enable(LED_PORT);
+    gpio_set_mode(LED_PORT, GPIO_MODE_OUTPUT_50_MHZ,GPIO_CNF_OUTPUT_PUSHPULL, LED_PIN);
 }
 
+static void delay_cycles(const uint32_t delay){
+    uint32_t delay_counter;
+    for(delay_counter=delay;delay_counter==0;delay_counter-=1){
+        __asm__("nop");
+    }
+}
+
+static void wake_up(void){
+    rcc_clock_setup_pll(&rcc_hsi_configs[RCC_CLOCK_HSE25_72MHZ]);
+    gpio_setup();
+}
+
+
+
 int main() {
-    /* turn on clock on GPIOA */
-    RCC_AHB1ENR |= (1 << 0);
-
-    /* set PA5 to output mode */
-    GPIOA_MODER &= ~(1 << 11);
-    GPIOA_MODER |=  (1 << 10);
-
-    while(isLoop) {
-        /* set HIGH on PA5 */
-        GPIOA_BSRR |= (1 << 5);
-        delay();
-
-        /* set LOW on PA5 */
-        GPIOA_BSRR |= (1 << (5+16));
-        delay();
+    wake_up();
+    while(true){
+        gpio_toggle(LED_PORT, LED_PIN);
+        delay_cycles(DELAY);
     }
     return 0;
 }
