@@ -1,4 +1,4 @@
-#include "../include/common.h"
+#include<common.h>
 
 /* Clock */
 #define RCC_AHB1ENR     *((volatile uint32_t*) (0x40023830))

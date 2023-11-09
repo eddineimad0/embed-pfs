@@ -1,0 +1,3 @@
+-I./include/
+-I./libs/libopencm3/include/libopencm3/
+-std=c99
