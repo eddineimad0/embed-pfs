@@ -12,12 +12,20 @@ else
 endif
 
 CODE_DIRS = firmware
+BOOT_SRC_DIRS = boot
+DRIVER_SRC_DIRS = driver
 INC_DIR = include
 OBJ_DIR = out/obj
 BIN_DIR = out/bin
-LDSCRIPT = scripts/linker.ld
+SCRIPTS_DIR = scripts
+LDSCRIPT = $(SCRIPTS_DIR)/linker.ld
+BOOT_LDSCRIPT = $(SCRIPTS_DIR)/bootlinker.ld
 
-BINARY = firmware
+BINARIES += $(BIN_DIR)/bootloader.bin
+BINARIES += $(BIN_DIR)/firmware.bin
+
+ELFS += $(BIN_DIR)/bootloader.elf
+ELFS += $(BIN_DIR)/firmware.elf
 
 OPENCM3_DIR = ./libs/libopencm3
 
@@ -44,13 +52,21 @@ LD := $(PREFIX)gcc
 OBJCOPY := $(PREFIX)objcopy
 OBJDUMP := $(PREFIX)objdump
 OPT := -Os
-DEBUG := -ggdb3
+DEBUG := -g3
 CSTD ?= -std=c99
 
 #######################################################################
 # Translation units
 CFILES = $(foreach D,$(CODE_DIRS),$(wildcard $(D)/*.c))
+ASMFILES += $(foreach D,$(CODE_DIRS),$(wildcard $(D)/*.S))
 OBJS = $(patsubst %.c,$(OBJ_DIR)/%.o,$(CFILES))
+OBJS += $(patsubst %.S,$(OBJ_DIR)/%.o,$(ASMFILES))
+
+BOOT_CFILES = $(foreach D,$(BOOT_SRC_DIRS),$(wildcard $(D)/*.c))
+BOOT_OBJS = $(patsubst %.c,$(OBJ_DIR)/%.o,$(BOOT_CFILES))
+
+DRIVERS_CFILES = $(foreach D,$(DRIVER_SRC_DIRS),$(wildcard $(D)/*.c))
+DRIVERS_OBJS = $(patsubst %.c,$(OBJ_DIR)/%.o,$(DRIVERS_CFILES))
 
 
 ######################################################################
@@ -58,7 +74,8 @@ OBJS = $(patsubst %.c,$(OBJ_DIR)/%.o,$(CFILES))
 
 CFLAGS += $(OPT) $(CSTD) $(DEBUG)
 CFLAGS += $(ARCH_FLAGS)
-CFLAGS += -Wall -Wextra -Wshadow -Wredundant-decls -Werror 
+CFLAGS += -Wall -Wextra -Wshadow  
+CFLAGS += -Wconversion  -Wredundant-decls -Werror 
 CFLAGS += -fno-common -ffunction-sections -fdata-sections 
 
 ###############################################################################
@@ -70,18 +87,14 @@ CPPFLAGS	+= $(DEFS)
 
 ###############################################################################
 # Linker flags
-#
+
 LDFLAGS += -nostdlib
 LDFLAGS	+= --static -nostartfiles
 LDFLAGS	+= $(ARCH_FLAGS) $(DEBUG)
-LDFLAGS	+= -T$(LDSCRIPT)
-LDFLAGS	+= -Wl,-Map=$(*).map
+LDFLAGS	+= -Wl,-Map=$@.map
 LDFLAGS += -Wl,--cref
 LDFLAGS	+= -Wl,--gc-sections
-# ifeq ($(V),99)
-# LDFLAGS		+= -Wl,--print-gc-sections
-# endif
-#
+
 ###############################################################################
 # Used libraries
 LD_LIBS += -L$(OPENCM3_DIR)/lib
@@ -93,35 +106,44 @@ LD_LIBS	+= -Wl,--start-group -lc -lgcc -lnosys -Wl,--end-group
 ###############################################################################
 $(info [+] $(CFILES))
 
-all: bin elf 
+all: firmware 
 
-elf: $(BIN_DIR)/$(BINARY).elf
-bin: $(BIN_DIR)/$(BINARY).bin
+bootloader: $(BIN_DIR)/bootloader.bin
+firmware: $(BIN_DIR)/firmware.bin
 
 $(OBJ_DIR)/%.o:%.c
 	$(Q)$(DIR_GUARD)
 	$(Q)$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@ 
 
 $(OBJ_DIR)/%.o:%.S
-	$(Q)$(CC) $(CFLAGS) -c $< -o $(OBJ_DIR)/$(notdir $@)
+	$(Q)$(DIR_GUARD)
+	$(Q)$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
 
-%.bin:%.elf
+$(BIN_DIR)/firmware.bin:$(BIN_DIR)/firmware.elf
 	$(Q)$(DIR_GUARD)
 	$(Q)$(OBJCOPY) -Obinary $< $@
 
-%.elf: $(OBJS) $(LDSCRIPT) $(OPENCM3_DIR)/lib/lib$(LIBNAME).a Makefile
+$(BIN_DIR)/firmware.elf: $(OBJS) $(DRIVERS_OBJS) $(LDSCRIPT) $(OPENCM3_DIR)/lib/lib$(LIBNAME).a Makefile
 	$(Q)$(DIR_GUARD)
-	$(Q)$(LD) $(LDFLAGS) $(filter %.o, $^) $(LD_LIBS) -o $@ 
+	$(Q)$(LD) $(LDFLAGS) -T$(LDSCRIPT) $(OBJS) $(DRIVERS_OBJS) $(LD_LIBS) -o $@ 
+
+$(BIN_DIR)/bootloader.bin: $(BIN_DIR)/bootloader.elf
+	$(Q)$(DIR_GUARD)
+	$(Q)$(OBJCOPY) -Obinary $< $@
+	$(Q)python3 $(SCRIPTS_DIR)/pad-bootloader.py
+
+$(BIN_DIR)/bootloader.elf: $(BOOT_OBJS) $(BOOT_LDSCRIPT) $(OPENCM3_DIR)/lib/lib$(LIBNAME).a Makefile
+	$(Q)$(DIR_GUARD)
+	$(Q)$(LD) $(LDFLAGS) -T$(BOOT_LDSCRIPT) $(BOOT_OBJS) $(LD_LIBS) -o $@ 
 
 clean: $(CLEAN)
 
 win_clean:
 	$(Q)if exist $(subst /,\,$(BIN_DIR)) rmdir /Q /S $(subst /,\,$(BIN_DIR))
-	$(Q)if exist $(subst /,\,$(BIN_DIR)) rmdir /Q /S $(subst /,\,$(OBJ_DIR))
+	$(Q)if exist $(subst /,\,$(OBJ_DIR)) rmdir /Q /S $(subst /,\,$(OBJ_DIR))
 
 unix_clean:
 	$(Q)rm -rf  $(BIN_DIR)/* 
-	rm -f $(OBJ_DIR)/*.o
+	$(Q)rm -f $(OBJ_DIR)/*.o
 
 .PHONY: clean elf
-

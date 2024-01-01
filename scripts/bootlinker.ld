@@ -1,7 +1,8 @@
 /* Define memory regions. */
 MEMORY
 {
-	FLASH 	 (rx)  : ORIGIN = 0x08000000, LENGTH = 64K 
+        /*64K is available but we want to warn us if we go beyond 16K for the bootloader*/
+	FLASH 	 (rx)  : ORIGIN = 0x08000000, LENGTH = 16K 
 	SRAM 	 (rwx) : ORIGIN = 0x20000000, LENGTH = 20K
 }
 
@@ -17,7 +18,6 @@ ENTRY(reset_handler)
 SECTIONS
 {
     .text : {
-            KEEP (*(.bootloader))
             *(.vectors)	/* Vector table */
             *(.text*)	/* Program code */
             . = ALIGN(4);

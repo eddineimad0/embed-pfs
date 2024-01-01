@@ -21,3 +21,11 @@ STM32F103C8T6 microcontroller.
 ## Memory Map
 
 ![image](./arm_cortex_m_fixed_memory_map.png)
+
+## Bootloader
+    Size 16KiB
+    Base adress 0x8000000
+
+## UART
+    Packet size 8 bits
+    Baud rate 115200
