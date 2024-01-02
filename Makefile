@@ -14,6 +14,7 @@ endif
 CODE_DIRS = firmware
 BOOT_SRC_DIRS = boot
 DRIVER_SRC_DIRS = driver
+UTIL_SRC_DIRS = util
 INC_DIR = include
 OBJ_DIR = out/obj
 BIN_DIR = out/bin
@@ -67,6 +68,9 @@ BOOT_OBJS = $(patsubst %.c,$(OBJ_DIR)/%.o,$(BOOT_CFILES))
 
 DRIVERS_CFILES = $(foreach D,$(DRIVER_SRC_DIRS),$(wildcard $(D)/*.c))
 DRIVERS_OBJS = $(patsubst %.c,$(OBJ_DIR)/%.o,$(DRIVERS_CFILES))
+
+UTIL_CFILES = $(foreach D,$(UTIL_SRC_DIRS),$(wildcard $(D)/*.c))
+UTIL_OBJS = $(patsubst %.c,$(OBJ_DIR)/%.o,$(UTIL_CFILES))
 
 
 ######################################################################
@@ -123,9 +127,9 @@ $(BIN_DIR)/firmware.bin:$(BIN_DIR)/firmware.elf
 	$(Q)$(DIR_GUARD)
 	$(Q)$(OBJCOPY) -Obinary $< $@
 
-$(BIN_DIR)/firmware.elf: $(OBJS) $(DRIVERS_OBJS) $(LDSCRIPT) $(OPENCM3_DIR)/lib/lib$(LIBNAME).a Makefile
+$(BIN_DIR)/firmware.elf: $(OBJS) $(DRIVERS_OBJS) $(UTIL_OBJS) $(LDSCRIPT) $(OPENCM3_DIR)/lib/lib$(LIBNAME).a Makefile
 	$(Q)$(DIR_GUARD)
-	$(Q)$(LD) $(LDFLAGS) -T$(LDSCRIPT) $(OBJS) $(DRIVERS_OBJS) $(LD_LIBS) -o $@ 
+	$(Q)$(LD) $(LDFLAGS) -T$(LDSCRIPT) $(OBJS) $(DRIVERS_OBJS) $(UTIL_OBJS) $(LD_LIBS) -o $@ 
 
 $(BIN_DIR)/bootloader.bin: $(BIN_DIR)/bootloader.elf
 	$(Q)$(DIR_GUARD)
