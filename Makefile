@@ -101,6 +101,7 @@ LDFLAGS	+= -Wl,--gc-sections
 
 ###############################################################################
 # Used libraries
+
 LD_LIBS += -L$(OPENCM3_DIR)/lib
 LD_LIBS += -l$(LIBNAME)
 LD_LIBS	+= -Wl,--start-group -lc -lgcc -lnosys -Wl,--end-group
@@ -111,6 +112,9 @@ LD_LIBS	+= -Wl,--start-group -lc -lgcc -lnosys -Wl,--end-group
 $(info [+] $(CFILES))
 
 all: firmware 
+
+flash: firmware
+	st-flash.exe --reset write $(BIN_DIR)/firmware.bin 0x8000000
 
 bootloader: $(BIN_DIR)/bootloader.bin
 firmware: $(BIN_DIR)/firmware.bin

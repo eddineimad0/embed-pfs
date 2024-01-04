@@ -27,5 +27,18 @@ STM32F103C8T6 microcontroller.
     Base adress 0x8000000
 
 ## UART
-    Packet size 8 bits
     Baud rate 115200
+    Packet size 8 bits
+    1 start bit, 1 stop bit and 0 parity bit
+    10 bits to send an 8 bits data
+    debit : 115200/10 = 11,520 KB
+
+## Packet Protocol
+    24 bytes datagramme.
+        1 byte: datagramme size.(0~255);
+        19 bytes: payload.
+        4 byte: CRC checksum.
+
+    ### Control datagramme
+    ACK: length=1 , 1st Byte = 0xAC
+    Retransmit: length=1 , 1st Byte = 0xAB
