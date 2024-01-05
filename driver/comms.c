@@ -2,6 +2,7 @@
 #include<uart.h>
 #include<mem.h>
 #include<libopencm3/stm32/crc.h>
+#include<libopencm3/stm32/rcc.h>
 
 #define PACKET_BUFFER_SIZE (8)
 #define PACKET_BUFFER_MASK PACKET_BUFFER_SIZE 
@@ -39,7 +40,7 @@ static bool Packet_is_cntrl(Packet* pkt,uint8_t cntrl_byte){
     }
 
     for(uint8_t i = 0; i< PACKET_PAYLOAD_BYTES;i+=1){
-        if(pkt->data[i] != 0xFF){
+        if(pkt->data[i] != PACKET_PAYLOAD_PADDING){
             return false;
         }
     }
@@ -48,17 +49,18 @@ static bool Packet_is_cntrl(Packet* pkt,uint8_t cntrl_byte){
 }
 
 void comms_setup(void){
+    rcc_periph_clock_enable(RCC_CRC);
     ret.length = 1;
     ret.data[0] = PACKET_RET_BYTE0;
     for(uint8_t i = 1; i< PACKET_PAYLOAD_BYTES; i+=1){
-        ret.data[i] = 0xFF;
+        ret.data[i] = PACKET_PAYLOAD_PADDING;
     }
     ret.crc = Packet_compute_crc32(&ret);
 
     ack.length = 1;
     ack.data[0] = PACKET_ACK_BYTE0;
     for(uint8_t i = 1; i< PACKET_PAYLOAD_BYTES; i+=1){
-        ret.data[i] = 0xFF;
+        ret.data[i] = PACKET_PAYLOAD_PADDING;
     }
     ack.crc = Packet_compute_crc32(&ret);
 }
@@ -127,7 +129,22 @@ void comms_read(Packet* pkt){
     buffer_read_idx = (buffer_read_idx + 1) & PACKET_BUFFER_MASK;
 }
 
+// This function uses the CRC32/BZIP2 algorithme
 uint32_t Packet_compute_crc32(Packet* pkt){
+    uint8_t* temp_ptr = (uint8_t*)pkt;
+    uint8_t reversed_packet[sizeof(Packet) - sizeof(uint32_t)] = {0};
+
+    // stm32 CRC32 peripheral reads the data in big endian while the 
+    // cortex m3 processor uses little endian so to get accurate results
+    // we will change each 32-bits word to use big endian
+    for(uint32_t i=0; i<(sizeof(Packet) - sizeof(uint32_t)); i+=4){
+        reversed_packet[i+3] = temp_ptr[i];
+        reversed_packet[i+2] = temp_ptr[i+1];
+        reversed_packet[i+1] = temp_ptr[i+2];
+        reversed_packet[i] = temp_ptr[i+3];
+    }
     crc_reset();
-    return crc_calculate_block((uint32_t*)pkt, (sizeof(Packet) - sizeof(pkt->crc))/sizeof(uint32_t));
+    uint32_t crc_checksum = crc_calculate_block((uint32_t*)reversed_packet, (sizeof(Packet) - sizeof(uint32_t))/sizeof(uint32_t));
+    // Necessary to filp the bits since the hardware doesn't
+    return (crc_checksum ^ 0xFFFFFFFF);
 }

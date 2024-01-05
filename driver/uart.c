@@ -56,7 +56,7 @@ void uart_write_byte(uint8_t byte){
     usart_send_blocking(UART_ID,(uint16_t)byte);
 }
 
-void uart_write_buffer(uint8_t* data,uint32_t size){
+void uart_write_buffer(uint8_t* data, uint32_t size){
     for(uint32_t i = 0; i<size; i+=1){
         uart_write_byte(data[i]);
     }

@@ -9,6 +9,7 @@ typedef struct packet_t{
 #define PACKET_CRC_BYTES (4) // CRC32
 #define PACKET_ACK_BYTE0 (0xAC)
 #define PACKET_RET_BYTE0 (0xAB)
+#define PACKET_PAYLOAD_PADDING (0xFF)
 
     uint8_t length;
     uint8_t data[PACKET_PAYLOAD_BYTES];

@@ -116,6 +116,10 @@ all: firmware
 flash: firmware
 	st-flash.exe --reset write $(BIN_DIR)/firmware.bin 0x8000000
 
+debug: firmware
+	st-flash.exe --reset write $(BIN_DIR)/firmware.bin 0x8000000
+	st-util -p 4500
+
 bootloader: $(BIN_DIR)/bootloader.bin
 firmware: $(BIN_DIR)/firmware.bin
 
@@ -131,7 +135,7 @@ $(BIN_DIR)/firmware.bin:$(BIN_DIR)/firmware.elf
 	$(Q)$(DIR_GUARD)
 	$(Q)$(OBJCOPY) -Obinary $< $@
 
-$(BIN_DIR)/firmware.elf: $(OBJS) $(DRIVERS_OBJS) $(UTIL_OBJS) $(LDSCRIPT) $(OPENCM3_DIR)/lib/lib$(LIBNAME).a Makefile
+$(BIN_DIR)/firmware.elf: $(OBJS) $(BOOT_OBJS) $(DRIVERS_OBJS) $(UTIL_OBJS) $(LDSCRIPT) $(OPENCM3_DIR)/lib/lib$(LIBNAME).a Makefile
 	$(Q)$(DIR_GUARD)
 	$(Q)$(LD) $(LDFLAGS) -T$(LDSCRIPT) $(OBJS) $(DRIVERS_OBJS) $(UTIL_OBJS) $(LD_LIBS) -o $@ 
 
@@ -139,10 +143,11 @@ $(BIN_DIR)/bootloader.bin: $(BIN_DIR)/bootloader.elf
 	$(Q)$(DIR_GUARD)
 	$(Q)$(OBJCOPY) -Obinary $< $@
 	$(Q)python3 $(SCRIPTS_DIR)/pad-bootloader.py
+	$(Q)$(CC) $(CPPFLAGS) $(CFLAGS) -c firmware/bootloader-section.S -o $(OBJ_DIR)/firmware/bootloader-section.o
 
-$(BIN_DIR)/bootloader.elf: $(BOOT_OBJS) $(BOOT_LDSCRIPT) $(OPENCM3_DIR)/lib/lib$(LIBNAME).a Makefile
+$(BIN_DIR)/bootloader.elf: $(BOOT_OBJS) $(DRIVERS_OBJS) $(UTIL_OBJS) $(BOOT_LDSCRIPT) $(OPENCM3_DIR)/lib/lib$(LIBNAME).a Makefile
 	$(Q)$(DIR_GUARD)
-	$(Q)$(LD) $(LDFLAGS) -T$(BOOT_LDSCRIPT) $(BOOT_OBJS) $(LD_LIBS) -o $@ 
+	$(Q)$(LD) $(LDFLAGS) -T$(BOOT_LDSCRIPT) $(BOOT_OBJS) $(DRIVERS_OBJS) $(UTIL_OBJS) $(LD_LIBS) -o $@ 
 
 clean: $(CLEAN)
 
