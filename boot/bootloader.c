@@ -35,11 +35,21 @@ int main(void){
         .data = {'h','e','l','l','o','i','m','a','d',0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF},
     };
     pkt.crc = Packet_compute_crc32(&pkt);
-    /* crc_reset(); */
-    /* pkt.crc = crc_calculate(0xFF); */
+
+    Packet recv;
     while(true){
         // bootloader loop
-        comms_write(&pkt);
+        comms_update();
+
+        if(comms_is_packet_available()){
+            comms_read(&recv);
+            /* comms_write(&recv); */
+            for(uint8_t i = 0; i < 5; i += 1){
+                pkt.data[i] = recv.data[i];
+            }
+            pkt.crc = Packet_compute_crc32(&pkt);
+            comms_write(&pkt);
+        }
         systick_delay(3);
     }
 
