@@ -114,6 +114,9 @@ static void check_for_firmware_update(){
                 is_sync_seq = is_sync_seq && sync_seq[3] == SYNC_SEQ_3;
 
                 if(is_sync_seq){
+                    while(uart_data_available()){
+                        uart_read_byte();
+                    }
                     Packet_create_single_byte(&pkt, FU_PACKET_SYN_OBSERVED_BYTE0);
                     comms_write(&pkt);
                     state = BL_WaitingForUpdateReq;
