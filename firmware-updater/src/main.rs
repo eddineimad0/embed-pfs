@@ -3,15 +3,13 @@ use std::env;
 use std::fs;
 use std::iter;
 use std::process::exit;
-use std::sync::RwLock;
-use std::sync::Mutex;
-use std::thread;
 use std::thread::sleep;
 use std::time::Duration;
 use std::usize;
 
 use crc::CRC_32_BZIP2;
 use crc::Crc;
+use indicatif::{ProgressBar,ProgressStyle};
 use serialport::{FlowControl, SerialPort};
 
 const PACKET_LENGTH_BYTES:u8   = 1;
@@ -117,12 +115,15 @@ impl From<u8> for Packet {
 
 
 fn main() {
-    env::set_var("RUST_BACKTRACE", "1");
-    
     let fw_update_path = "./fw-image/firmware.bin";
 
     let fw_data = fs::read(fw_update_path).unwrap();
     let final_data:Vec<u8> = fw_data.into_iter().skip(BOOTLOADER_SIZE).collect();
+
+    let progress = ProgressBar::new(final_data.len() as u64);
+    progress.set_style(ProgressStyle::with_template("[{bar:40.cyan/blue}] {percent}%")
+        .unwrap()
+        .progress_chars("#>-"));
     
     let ports = serialport::available_ports().expect("No serial ports found!");
     ports.iter()
@@ -131,125 +132,120 @@ fn main() {
         })
         .expect("Targeted serail port not found!");
     
-    let uart = Mutex::new(
+    let mut uart = 
         serialport::new(SERIAL_PORT, BAUD_RATE)
         .parity(serialport::Parity::None)
         .flow_control(FlowControl::None)
         .stop_bits(serialport::StopBits::One)
-        .open().unwrap()
-    );
+        .open().unwrap();
 
-    println!("[+] Device found on port {}",uart.lock().unwrap().name().unwrap());
-    let packets_queue: Mutex<VecDeque<Packet>> = Mutex::new(VecDeque::new());
-    let prev_packet:RwLock<Packet> =  RwLock::new(Packet::new(1,&[0xFF]));
-    thread::scope(|s|{
-        s.spawn(|| {
-            let ack:Packet = Packet::new(1, &[PACKET_ACK_BYTE0]);
-            let ret:Packet = Packet::new(1, &[PACKET_RET_BYTE0]);
-            let mut raw_data:[u8;PACKET_SIZE as usize] = [0x00;PACKET_SIZE as usize];
-            loop {
-                while uart.lock().unwrap().bytes_to_read().unwrap() >= PACKET_SIZE as u32 {
-                    match uart.lock().unwrap().read_exact(raw_data.as_mut_slice()){
-                            Ok(()) => {},
-                            Err(e) => {
-                                println!("[ERROR]: {}",e);
-                                exit(1);
-                            }
-                    }
+    println!("[+] Device found on port {}",uart.name().unwrap());
 
-                     // println!("raw_data={:?}",raw_data);
+    let mut packets_queue: VecDeque<Packet> = VecDeque::new();
+    let mut prev_packet:Packet =  Packet::new(1,&[0xFF]);
+    let mut result = sync_with_bootloader(&mut uart, &mut packets_queue, &mut prev_packet,10000);
+    if !result {
+        println!("[-] Sync Timeout!!");
+        exit(1);
+    }
+    let mut reply = Packet::from(FU_PACKET_UP_REQ_BYTE0);
+    send_packet(&mut uart, &reply, &mut prev_packet);
+    println!("[+] Sending Update request.");
+    result = wait_for_cntrl_packet(&mut uart,&mut packets_queue,&mut prev_packet, FU_PACKET_UP_RESP_BYTE0, 5000);
+    if !result {
+        println!("[-] Update Timeout!!");
+        exit(1);
+    }
+    result = wait_for_cntrl_packet(&mut uart, &mut packets_queue,&mut prev_packet, FU_PACKET_FW_LENGTH_REQ_BYTE0, 5000);
+    if !result {
+        println!("[-] Update Timeout!!");
+        exit(1);
+    }
+    println!("[+] Bootloader requested firmware length");
+    reply = create_firmware_length_packet(final_data.len());
+    send_packet(&mut uart, &reply, &mut prev_packet);
+    println!("[+] Responding with {}Kib",final_data.len());
+    result = wait_for_cntrl_packet(&mut uart,&mut packets_queue, &mut prev_packet, FU_PACKET_READY_FOR_FW_BYTE0, 5000);
+    if !result {
+        println!("[-] Update Timeout!!");
+        exit(1);
+    }
+    let mut bytes_sent:usize = 0;
+    println!("[+] Sending Firmware");
+    while bytes_sent < final_data.len() {
+        let increment = if final_data.len() - bytes_sent > PACKET_DATA_BYTES as usize {
+            PACKET_DATA_BYTES as usize
+        }else{
+            final_data.len() - bytes_sent
+        };
 
-                    let pkt = match parse_packet(&raw_data){
-                        Some(val) => val,
-                        None => {
-                            send_packet(&uart, &ret, &prev_packet);
-                            continue;
-                        }
-                    };
+        let data_bytes = &final_data[bytes_sent..(bytes_sent + increment)];
+        let data_pkt = Packet::new(increment as u8, data_bytes);
+        send_packet(&mut uart, &data_pkt, &mut prev_packet);
+        if bytes_sent + increment < final_data.len(){
+            if !wait_for_cntrl_packet(&mut uart,&mut packets_queue,&mut prev_packet, FU_PACKET_READY_FOR_FW_BYTE0, 5000){
+                println!("[-] Update Failure!!");
+                exit(0);
+            }
+        }
+        bytes_sent += increment;
+        // println!("[+] Wrote {} bytes of firmware {:.2}%",bytes_sent,(bytes_sent as f32/final_data.len() as f32)*100.0);
+        progress.set_position(bytes_sent as u64);
+    }
+    result = wait_for_cntrl_packet(&mut uart,&mut packets_queue,&mut prev_packet, FU_PACKET_UPDATE_SUCCESS_BYTE0, 5000);
+    if !result {
+        println!("[-] Bootloader didn't confirm update!!");
+        exit(1);
+    }
+    println!("[+] Update Success.");
+    exit(0);
 
-                    // Request Retransmit
-                    if pkt.is_ret() {
-                        // println!("Retransmitting last packet");
-                        write_packet(&uart, &prev_packet.read().unwrap());
-                        continue;
-                    }
+}
 
-                    // Ack packet
-                    if pkt.is_ack(){
-                        // println!("Received Ack packet");
-                        continue;
-                    }
-
-                    // Save the packet and send ACK
-                    packets_queue.lock().unwrap().push_back(pkt);
-                    send_packet(&uart, &ack, &prev_packet);
+fn poll_queue(uart:&mut Box<dyn SerialPort>,packets_queue:&mut VecDeque<Packet>,prev:&mut Packet){
+    let ack:Packet = Packet::new(1, &[PACKET_ACK_BYTE0]);
+    let ret:Packet = Packet::new(1, &[PACKET_RET_BYTE0]);
+    let mut raw_data:[u8;PACKET_SIZE as usize] = [0x00;PACKET_SIZE as usize];
+    while uart.bytes_to_read().unwrap() >= PACKET_SIZE as u32 {
+        match uart.read_exact(raw_data.as_mut_slice()){
+                Ok(()) => {},
+                Err(e) => {
+                    println!("[ERROR]: {}",e);
+                    exit(1);
                 }
-            }
-        });
+        }
 
-        s.spawn(|| {
-            let mut result = sync_with_bootloader(&uart, &packets_queue, 10000);
-            if !result {
-                println!("[-] Sync Timeout!!");
-                exit(1);
-            }
-            let mut reply = Packet::from(FU_PACKET_UP_REQ_BYTE0);
-            send_packet(&uart, &reply, &prev_packet);
-            println!("[+] Sending Update request.");
-            result = wait_for_cntrl_packet(&packets_queue, FU_PACKET_UP_RESP_BYTE0, 5000);
-            if !result {
-                println!("[-] Update Timeout!!");
-                exit(1);
-            }
-            result = wait_for_cntrl_packet(&packets_queue, FU_PACKET_FW_LENGTH_REQ_BYTE0, 5000);
-            if !result {
-                println!("[-] Update Timeout!!");
-                exit(1);
-            }
-            println!("[+] Bootloader requested firmware length");
-            reply = create_firmware_length_packet(final_data.len());
-            send_packet(&uart, &reply, &prev_packet);
-            println!("[+] Responding with Firmware length={} Kib",final_data.len());
-            result = wait_for_cntrl_packet(&packets_queue, FU_PACKET_READY_FOR_FW_BYTE0, 5000);
-            if !result {
-                println!("[-] Update Timeout!!");
-                exit(1);
-            }
-            let mut bytes_sent:usize = 0;
-            println!("[+] Sending Firmware");
-            while bytes_sent < final_data.len() {
-                let increment = if final_data.len() - bytes_sent > PACKET_DATA_BYTES as usize {
-                    PACKET_DATA_BYTES as usize
-                }else{
-                    final_data.len() - bytes_sent
-                };
+        // println!("raw_data={:?}",raw_data);
 
-                let data_bytes = &final_data[bytes_sent..(bytes_sent + increment)];
-                let data_pkt = Packet::new(increment as u8, data_bytes);
-                send_packet(&uart, &data_pkt, &prev_packet);
-                // println!("Sending data={:?}",data_pkt.as_bytes());
-                if !wait_for_cntrl_packet(&packets_queue, FU_PACKET_READY_FOR_FW_BYTE0, 5000){
-                    println!("[-] Update Failure!!");
-                    exit(0);
-                }
-                bytes_sent += increment;
-                println!("[+] Wrote {} bytes of firmware {:.2}%",bytes_sent,(bytes_sent as f32/final_data.len() as f32)*100.0);
+        let pkt = match parse_packet(&raw_data){
+            Some(val) => val,
+            None => {
+                send_packet(uart, &ret,prev);
+                continue;
             }
-            result = wait_for_cntrl_packet(&packets_queue, FU_PACKET_UPDATE_SUCCESS_BYTE0, 5000);
-            if !result {
-                println!("[-] Bootloader didn't confirm update!!");
-                exit(1);
-            }
-            println!("[+] Update Success.");
-            exit(0);
-        });
-    });
+        };
 
+        // Request Retransmit
+        if pkt.is_ret() {
+            // println!("Retransmitting last packet");
+            write_packet(uart, prev);
+            continue;
+        }
+
+        // Ack packet
+        if pkt.is_ack(){
+            // println!("Received Ack packet");
+            continue;
+        }
+
+        // Save the packet and send ACK
+        packets_queue.push_back(pkt);
+        send_packet(uart, &ack, prev);
+    }
 }
 
 fn create_firmware_length_packet(length:usize)->Packet{
     let mut reply_payload:[u8;4] = [0;4];
-    // reply_payload[0] = FU_PACKET_FW_LENGTH_RESP_BYTE0;
     let length_bytes = length.to_le_bytes();
     reply_payload[0] = length_bytes[0];
     reply_payload[1] = length_bytes[1];
@@ -258,13 +254,17 @@ fn create_firmware_length_packet(length:usize)->Packet{
     return Packet::new(reply_payload.len() as u8,&reply_payload);
 }
 
-fn wait_for_cntrl_packet(packets_queue:&Mutex<VecDeque<Packet>>, value:u8, timeout:u32) -> bool  {
+fn wait_for_cntrl_packet(uart:&mut Box<dyn SerialPort>,
+    packets_queue:&mut VecDeque<Packet>,
+    prev:&mut Packet,
+    value:u8,
+    timeout:u32) -> bool  {
     let mut iterations:u32 = 0;
     while iterations < timeout {
         sleep(Duration::from_millis(100));
-        let mut queue = packets_queue.lock().unwrap();
-        if  queue.len() > 0{
-            let pkt = queue.pop_front().unwrap();
+        poll_queue(uart, packets_queue, prev);
+        if  packets_queue.len() > 0{
+            let pkt = packets_queue.pop_front().unwrap();
             // println!("checking packt={:?}",pkt.as_bytes());
             if pkt.is_cntrl_packet(value){
                 // println!("check true");
@@ -277,22 +277,25 @@ fn wait_for_cntrl_packet(packets_queue:&Mutex<VecDeque<Packet>>, value:u8, timeo
     return false;
 }
 
-fn sync_with_bootloader(uart:&Mutex<Box<dyn SerialPort>>, packets_queue:&Mutex<VecDeque<Packet>>, timeout:usize) -> bool  {
+fn sync_with_bootloader(uart:&mut Box<dyn SerialPort>,
+    packets_queue:&mut VecDeque<Packet>,
+    prev:&mut Packet,
+    timeout:usize) -> bool  {
     println!("[+] Syncing with bootloader");
     let mut iterations:usize = 0;
     while iterations < timeout {
-        match uart.lock().unwrap().write_all(&FU_SYNC_SEQ){
+        match uart.write_all(&FU_SYNC_SEQ){
             Ok(_) => {},
             Err(e) => {
                 println!("[ERROR]:{}",e);
                 return false;
             }
         }
-        uart.lock().unwrap().flush().expect("[ERROR]: UART write failed!");
-        sleep(Duration::from_millis(10));
-        let mut queue = packets_queue.lock().unwrap();
-        if  queue.len() > 0{
-            let pkt = queue.pop_front().unwrap();
+        // uart.flush().expect("[ERROR]: UART write failed!");
+        sleep(Duration::from_millis(100));
+        poll_queue(uart, packets_queue, prev);
+        if  packets_queue.len() > 0{
+            let pkt = packets_queue.pop_front().unwrap();
             if pkt.is_cntrl_packet(FU_PACKET_SYN_OBSERVED_BYTE0){
                 return true;
             }
@@ -316,25 +319,25 @@ fn parse_packet(data:&[u8]) -> Option<Packet> {
     return Some(pkt);
 }
 
-fn send_packet(uart_guard:&Mutex<Box<dyn SerialPort>>,
+fn send_packet(uart_guard:&mut Box<dyn SerialPort>,
     pkt:&Packet,
-    prev:&RwLock<Packet>) -> bool{
+    prev:&mut Packet) -> bool{
     if write_packet(uart_guard, pkt){
-        prev.write().unwrap().replace(pkt);
+        prev.replace(pkt);
         return true;
     }
     return false;
 }
 
 
-fn write_packet(uart_guard:&Mutex<Box<dyn SerialPort>>,pkt:&Packet)->bool{
-    let mut uart = uart_guard.lock().unwrap();
+fn write_packet(uart:&mut Box<dyn SerialPort>,pkt:&Packet)->bool{
+    // println!("Sending={:?}",pkt.as_bytes());
     match uart.write_all(&pkt.as_bytes()){
         Ok(_) => {},
         Err(e) => {
             println!("[ERROR]:{}",e);
         }
     }
-    uart.flush().expect("[ERROR]: UART write failed!");
+    // uart.flush().expect("[ERROR]: UART write failed!");
     return true;
 }

@@ -6,3 +6,4 @@ edition = "2021"
 [dependencies]
 serialport = "4.3.0"
 crc = "3.0.1"
+indicatif = "0.17.7"
