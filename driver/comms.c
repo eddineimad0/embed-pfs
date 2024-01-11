@@ -5,7 +5,7 @@
 #include<libopencm3/stm32/rcc.h>
 #include<libopencm3/stm32/gpio.h>
 
-#define PACKET_BUFFER_SIZE (8)
+#define PACKET_BUFFER_SIZE (UART_RING_BUFFER_SIZE/PACKET_SIZE)
 #define PACKET_BUFFER_MASK (PACKET_BUFFER_SIZE - 1)
 
 typedef enum comms_state_t{
@@ -18,10 +18,10 @@ static CommsState state = Await_Length;
 static uint8_t payloads_bytes_count = 0;
 static uint8_t crc_bytes_count = 0;
 
-static Packet temp = {.length = 0,.data = {0},.crc = 0};
+static Packet temp_packet = {.length = 0,.data = {0},.crc = 0};
+static Packet prev_packet = {.length = 0,.data = {0},.crc = 0};
 static Packet ret = {.length = 0,.data = {0},.crc = 0};
 static Packet ack = {.length = 0,.data = {0},.crc = 0};
-static Packet prev_packet = {.length = 0,.data = {0},.crc = 0};
 
 static Packet buffer[PACKET_BUFFER_SIZE];
 static uint32_t buffer_read_idx = 0;
@@ -31,7 +31,14 @@ bool comms_is_packet_available(void){
     return (buffer_write_idx != buffer_read_idx);
 }
 
-static bool Packet_is_cntrl(Packet* pkt,uint8_t cntrl_byte){
+void Packet_create_single_byte(Packet* pkt,uint8_t byte){
+    m_memset(pkt, PACKET_PAYLOAD_PADDING, sizeof(Packet));
+    pkt->length = 0x01;
+    pkt->data[0] = byte;
+    pkt->crc = Packet_compute_crc32(pkt);
+}
+
+bool Packet_is_cntrl(const Packet* pkt,uint8_t cntrl_byte){
     if(pkt->length != 1){
         return false;
     }
@@ -50,25 +57,13 @@ static bool Packet_is_cntrl(Packet* pkt,uint8_t cntrl_byte){
 }
 
 void comms_setup(void){
-    // TODO:remove
-    /* rcc_periph_clock_enable(RCC_GPIOC); */
-    /* gpio_set_mode(GPIOC, GPIO_MODE_OUTPUT_50_MHZ, GPIO_CNF_OUTPUT_PUSHPULL, GPIO13); */
-    /* gpio_set(GPIOC, GPIO13); */
-
     rcc_periph_clock_enable(RCC_CRC);
-    ret.length = 1;
-    ret.data[0] = PACKET_RET_BYTE0;
-    for(uint8_t i = 1; i< PACKET_PAYLOAD_BYTES; i+=1){
-        ret.data[i] = PACKET_PAYLOAD_PADDING;
-    }
-    ret.crc = Packet_compute_crc32(&ret);
+    Packet_create_single_byte(&ret, PACKET_RET_BYTE0);
+    Packet_create_single_byte(&ack, PACKET_ACK_BYTE0);
+}
 
-    ack.length = 1;
-    ack.data[0] = PACKET_ACK_BYTE0;
-    for(uint8_t i = 1; i < PACKET_PAYLOAD_BYTES; i+=1){
-        ack.data[i] = PACKET_PAYLOAD_PADDING;
-    }
-    ack.crc = Packet_compute_crc32(&ack);
+void comms_shutdown(void){
+    rcc_periph_clock_disable(RCC_CRC);
 }
 
 void comms_update(void){
@@ -79,12 +74,12 @@ void comms_update(void){
         switch (state) {
 
             case Await_Length: {
-                temp.length = uart_read_byte();
+                temp_packet.length = uart_read_byte();
                 state = Await_Paylod;
             }break;
 
             case Await_Paylod:{
-                temp.data[payloads_bytes_count] = uart_read_byte();
+                temp_packet.data[payloads_bytes_count] = uart_read_byte();
                 payloads_bytes_count += 1;
                 if(payloads_bytes_count >= PACKET_PAYLOAD_BYTES){
                     payloads_bytes_count = 0;
@@ -94,30 +89,32 @@ void comms_update(void){
 
             case Await_CRC:{
                 // the received crc is expected to be in little endian.
-                temp.crc |= ((uint32_t)(uart_read_byte())) << (8*(crc_bytes_count));
+                temp_packet.crc |= ((uint32_t)(uart_read_byte())) << (8*(crc_bytes_count));
                 crc_bytes_count += 1;
                 if(crc_bytes_count >= PACKET_CRC_BYTES){
                     crc_bytes_count = 0;
-                    uint32_t computed_crc = Packet_compute_crc32(&temp);
+                    uint32_t computed_crc = Packet_compute_crc32(&temp_packet);
 
-                    if(temp.crc != computed_crc){
+                    if(temp_packet.crc != computed_crc){
                         comms_write(&ret);
-                    }else if(Packet_is_cntrl(&temp,PACKET_RET_BYTE0)){
+                    }else if(Packet_is_cntrl(&temp_packet,PACKET_RET_BYTE0)){
+
                         // Retransmit last received packet
                         uart_write_buffer((uint8_t*)&prev_packet, sizeof(Packet));
-                    }else if(Packet_is_cntrl(&temp,PACKET_ACK_BYTE0)){
+                    }else if(Packet_is_cntrl(&temp_packet,PACKET_ACK_BYTE0)){
                         // Drop ACK packets
                     }else{
+
                         uint32_t next_write_index = (buffer_write_idx + 1) & PACKET_BUFFER_MASK;
                         if(next_write_index == buffer_read_idx){
                             // Debug check
                             __asm__("BKPT #0");
                         }
-                        custom_memcpy(&temp, &buffer[buffer_write_idx], sizeof(Packet));
+                        m_memcpy(&temp_packet, &buffer[buffer_write_idx], sizeof(Packet));
                         buffer_write_idx = next_write_index;
                         comms_write(&ack);
                     }
-                    temp.crc = 0;
+                    temp_packet.crc = 0;
                     state = Await_Length;
                 }
             }break;
@@ -126,22 +123,21 @@ void comms_update(void){
                 // Unreachable code.
             }
         }
-        gpio_toggle(GPIOC, GPIO13);
     }
 }
 
-void comms_write(Packet* pkt){
+void comms_write(const Packet* pkt){
     uart_write_buffer((uint8_t*)pkt, sizeof(Packet));
-    custom_memcpy(pkt, &prev_packet, sizeof(Packet));
+    m_memcpy(pkt, &prev_packet, sizeof(Packet));
 }
 
 void comms_read(Packet* pkt){
-    custom_memcpy(&buffer[buffer_read_idx], pkt, sizeof(Packet));
+    m_memcpy(&buffer[buffer_read_idx], pkt, sizeof(Packet));
     buffer_read_idx = (buffer_read_idx + 1) & PACKET_BUFFER_MASK;
 }
 
 // This function uses the CRC32/BZIP2 algorithme
-uint32_t Packet_compute_crc32(Packet* pkt){
+uint32_t Packet_compute_crc32(const Packet* pkt){
     uint8_t* temp_ptr = (uint8_t*)pkt;
     uint8_t reversed_packet[sizeof(Packet) - sizeof(uint32_t)] = {0};
 
@@ -154,6 +150,7 @@ uint32_t Packet_compute_crc32(Packet* pkt){
         reversed_packet[i+1] = temp_ptr[i+2];
         reversed_packet[i] = temp_ptr[i+3];
     }
+
     crc_reset();
     uint32_t crc_checksum = crc_calculate_block((uint32_t*)reversed_packet, (sizeof(Packet) - sizeof(uint32_t))/sizeof(uint32_t));
     // Necessary to filp the bits since the hardware doesn't

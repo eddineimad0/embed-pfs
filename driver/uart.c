@@ -10,10 +10,9 @@
 #define UART_TX_PIN (GPIO_USART2_TX)
 #define UART_RX_PIN (GPIO_USART2_RX)
 
-#define RING_BUFFER_SIZE (128)
 
 static RingBuffer rb = {0U};
-static uint8_t data_buffer[RING_BUFFER_SIZE] = {0U};
+static uint8_t data_buffer[UART_RING_BUFFER_SIZE] = {0U};
 
 
 void usart2_isr(void){
@@ -21,13 +20,13 @@ void usart2_isr(void){
     const bool overrun = usart_get_flag(UART_ID,USART_FLAG_ORE) == 1;
     if(data_received || overrun){
         if(!RingBuffer_write_byte(&rb, (uint8_t)usart_recv(UART_ID))){
-            // Failure? 
+            //TODO: Failure? 
         }
     }
 }
 
 void uart_setup(void){
-    RingBuffer_setup(&rb, data_buffer, RING_BUFFER_SIZE);
+    RingBuffer_setup(&rb, data_buffer, UART_RING_BUFFER_SIZE);
     // Enable clock for GPIO port A (USART2)
     rcc_periph_clock_enable(RCC_GPIOA);
     rcc_periph_clock_enable(RCC_USART2);
@@ -52,11 +51,19 @@ void uart_setup(void){
     usart_enable(UART_ID);
 }
 
+void uart_shutdown(void){
+    usart_disable(UART_ID);
+    usart_disable_rx_interrupt(UART_ID);
+    nvic_disable_irq(NVIC_USART2_IRQ);
+    rcc_periph_clock_disable(RCC_USART2);
+    rcc_periph_clock_disable(RCC_GPIOA);
+}
+
 void uart_write_byte(uint8_t byte){
     usart_send_blocking(UART_ID,(uint16_t)byte);
 }
 
-void uart_write_buffer(uint8_t* data, uint32_t size){
+void uart_write_buffer(const uint8_t* data, uint32_t size){
     for(uint32_t i = 0; i<size; i+=1){
         uart_write_byte(data[i]);
     }

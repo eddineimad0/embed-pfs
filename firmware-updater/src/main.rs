@@ -1,28 +1,42 @@
+use std::collections::VecDeque;
 use std::env;
+use std::fs;
 use std::iter;
 use std::process::exit;
+use std::sync::RwLock;
+use std::sync::Mutex;
+use std::thread;
+use std::thread::sleep;
 use std::time::Duration;
 use std::usize;
 
 use crc::CRC_32_BZIP2;
 use crc::Crc;
-use serialport::{DataBits, FlowControl, SerialPort};
+use serialport::{FlowControl, SerialPort};
 
 const PACKET_LENGTH_BYTES:u8   = 1;
 const PACKET_DATA_BYTES:u8     = 19;
 const PACKET_CRC_BYTES:u8      = 4;
-// const PACKET_CRC_POSITION:u8      = PACKET_LENGTH_BYTES + PACKET_DATA_BYTES;
 const PACKET_SIZE:u8         = PACKET_LENGTH_BYTES + PACKET_DATA_BYTES + PACKET_CRC_BYTES;
 
-const PACKET_RET_BYTE0:u8     = 0x15;
-// const PACKET_SYN_BYTE0:u8     = 0x16;
-const PACKET_ACK_BYTE0:u8     = 0x17;
+const PACKET_RET_BYTE0:u8     = 0x07;
+const PACKET_ACK_BYTE0:u8     = 0x06;
 const PACKET_PADDING_BYTE:u8     = 0xFF;
 
 const SERIAL_PORT:&str = "COM4";
 const BAUD_RATE:u32 = 115200;
-const DEFAULT_TIMEOUT:Duration = Duration::from_millis(1000);
 const CRC:Crc<u32> = Crc::<u32>::new(&CRC_32_BZIP2);
+
+const FU_PACKET_SYN_OBSERVED_BYTE0:u8 = 0x01;
+const FU_PACKET_UP_REQ_BYTE0:u8 =0x1A;
+const FU_PACKET_UP_RESP_BYTE0:u8 = 0x1B;
+const FU_PACKET_FW_LENGTH_REQ_BYTE0:u8 = 0x0F;
+const FU_PACKET_READY_FOR_FW_BYTE0:u8 = 0x02;
+const FU_PACKET_UPDATE_SUCCESS_BYTE0:u8 = 0x04;
+
+const FU_SYNC_SEQ:[u8;4] = [0xDE,0xAD,0xBA,0xBE];
+
+const BOOTLOADER_SIZE:usize = 0x4000;
 
 #[derive(Clone)]
 struct Packet{
@@ -85,10 +99,30 @@ impl Packet{
     pub fn is_ret(&self)->bool{
         return self.is_cntrl_packet(PACKET_RET_BYTE0);
     }
+
+    pub fn replace(&mut self,value:&Self){
+        self.len = value.len;
+        for i in 0..self.data.len(){
+            self.data[i] = value.data[i];
+        }
+        self.crc = value.crc;
+    }
 }
+
+impl From<u8> for Packet {
+    fn from(value: u8) -> Self {
+        return Self::new(1, &[value]);
+    }
+}
+
 
 fn main() {
     env::set_var("RUST_BACKTRACE", "1");
+    
+    let fw_update_path = "./fw-image/firmware.bin";
+
+    let fw_data = fs::read(fw_update_path).unwrap();
+    let final_data:Vec<u8> = fw_data.into_iter().skip(BOOTLOADER_SIZE).collect();
     
     let ports = serialport::available_ports().expect("No serial ports found!");
     ports.iter()
@@ -97,70 +131,204 @@ fn main() {
         })
         .expect("Targeted serail port not found!");
     
-    let mut uart = serialport::new(SERIAL_PORT, BAUD_RATE)
-        .data_bits(DataBits::Eight)
+    let uart = Mutex::new(
+        serialport::new(SERIAL_PORT, BAUD_RATE)
         .parity(serialport::Parity::None)
         .flow_control(FlowControl::None)
         .stop_bits(serialport::StopBits::One)
-        .timeout(DEFAULT_TIMEOUT)
-        .open().unwrap();
+        .open().unwrap()
+    );
 
-    println!("[+] Listening on {}",SERIAL_PORT);
-
-    let ack:Packet = Packet::new(1, &[PACKET_ACK_BYTE0]);
-    let ret:Packet = Packet::new(1, &[PACKET_RET_BYTE0]);
-    let mut prev_packet:Packet = Packet::new(1,&[0xFF]);
-
-    let mut packets:Vec<Packet> = Vec::new();
-    let mut raw_data:[u8;PACKET_SIZE as usize] = [0x00;PACKET_SIZE as usize];
-
-    loop {
-        while uart.bytes_to_read().unwrap() >= PACKET_SIZE as u32 {
-            match uart.read_exact(raw_data.as_mut_slice()){
-                    Ok(()) => {},
-                    Err(e) => {
-                        println!("[ERROR]: {}",e);
-                        exit(1);
+    println!("[+] Device found on port {}",uart.lock().unwrap().name().unwrap());
+    let packets_queue: Mutex<VecDeque<Packet>> = Mutex::new(VecDeque::new());
+    let prev_packet:RwLock<Packet> =  RwLock::new(Packet::new(1,&[0xFF]));
+    thread::scope(|s|{
+        s.spawn(|| {
+            let ack:Packet = Packet::new(1, &[PACKET_ACK_BYTE0]);
+            let ret:Packet = Packet::new(1, &[PACKET_RET_BYTE0]);
+            let mut raw_data:[u8;PACKET_SIZE as usize] = [0x00;PACKET_SIZE as usize];
+            loop {
+                while uart.lock().unwrap().bytes_to_read().unwrap() >= PACKET_SIZE as u32 {
+                    match uart.lock().unwrap().read_exact(raw_data.as_mut_slice()){
+                            Ok(()) => {},
+                            Err(e) => {
+                                println!("[ERROR]: {}",e);
+                                exit(1);
+                            }
                     }
+
+                     // println!("raw_data={:?}",raw_data);
+
+                    let pkt = match parse_packet(&raw_data){
+                        Some(val) => val,
+                        None => {
+                            send_packet(&uart, &ret, &prev_packet);
+                            continue;
+                        }
+                    };
+
+                    // Request Retransmit
+                    if pkt.is_ret() {
+                        // println!("Retransmitting last packet");
+                        write_packet(&uart, &prev_packet.read().unwrap());
+                        continue;
+                    }
+
+                    // Ack packet
+                    if pkt.is_ack(){
+                        // println!("Received Ack packet");
+                        continue;
+                    }
+
+                    // Save the packet and send ACK
+                    packets_queue.lock().unwrap().push_back(pkt);
+                    send_packet(&uart, &ack, &prev_packet);
+                }
             }
+        });
 
-            println!("raw_data={:?}",raw_data);
-
-            let pkt = Packet::new(raw_data[0],&raw_data[1..20]);
-            let be_crc:[u8;4] = [raw_data[20],raw_data[21],raw_data[22],raw_data[23]];
-            let recvd_crc:u32 = u32::from_le_bytes(be_crc);
-
-            // Packet corrupted 
-            if pkt.crc != recvd_crc {
-                println!("CRC failed, computed {:#02x}, got {:#02x}",pkt.crc,recvd_crc);
-                write_packet(&mut uart, &ret);
-                prev_packet = ret.clone();
-                continue;
+        s.spawn(|| {
+            let mut result = sync_with_bootloader(&uart, &packets_queue, 10000);
+            if !result {
+                println!("[-] Sync Timeout!!");
+                exit(1);
             }
-
-            // Request Retransmit
-            if pkt.is_ret() {
-                println!("Retransmitting last packet");
-                println!("Last packet={:?}", prev_packet.as_bytes());
-                write_packet(&mut uart, &prev_packet);
-                continue;
+            let mut reply = Packet::from(FU_PACKET_UP_REQ_BYTE0);
+            send_packet(&uart, &reply, &prev_packet);
+            println!("[+] Sending Update request.");
+            result = wait_for_cntrl_packet(&packets_queue, FU_PACKET_UP_RESP_BYTE0, 5000);
+            if !result {
+                println!("[-] Update Timeout!!");
+                exit(1);
             }
-
-            // Ack packet
-            if pkt.is_ack(){
-                println!("Received Ack packet");
-                continue;
+            result = wait_for_cntrl_packet(&packets_queue, FU_PACKET_FW_LENGTH_REQ_BYTE0, 5000);
+            if !result {
+                println!("[-] Update Timeout!!");
+                exit(1);
             }
-            // save the packet and send ACK
-            packets.push(pkt);
-            write_packet(&mut uart, &ack);
-            prev_packet = ack.clone();
-        }
+            println!("[+] Bootloader requested firmware length");
+            reply = create_firmware_length_packet(final_data.len());
+            send_packet(&uart, &reply, &prev_packet);
+            println!("[+] Responding with Firmware length={} Kib",final_data.len());
+            result = wait_for_cntrl_packet(&packets_queue, FU_PACKET_READY_FOR_FW_BYTE0, 5000);
+            if !result {
+                println!("[-] Update Timeout!!");
+                exit(1);
+            }
+            let mut bytes_sent:usize = 0;
+            println!("[+] Sending Firmware");
+            while bytes_sent < final_data.len() {
+                let increment = if final_data.len() - bytes_sent > PACKET_DATA_BYTES as usize {
+                    PACKET_DATA_BYTES as usize
+                }else{
+                    final_data.len() - bytes_sent
+                };
 
-    }
+                let data_bytes = &final_data[bytes_sent..(bytes_sent + increment)];
+                let data_pkt = Packet::new(increment as u8, data_bytes);
+                send_packet(&uart, &data_pkt, &prev_packet);
+                // println!("Sending data={:?}",data_pkt.as_bytes());
+                if !wait_for_cntrl_packet(&packets_queue, FU_PACKET_READY_FOR_FW_BYTE0, 5000){
+                    println!("[-] Update Failure!!");
+                    exit(0);
+                }
+                bytes_sent += increment;
+                println!("[+] Wrote {} bytes of firmware {:.2}%",bytes_sent,(bytes_sent as f32/final_data.len() as f32)*100.0);
+            }
+            result = wait_for_cntrl_packet(&packets_queue, FU_PACKET_UPDATE_SUCCESS_BYTE0, 5000);
+            if !result {
+                println!("[-] Bootloader didn't confirm update!!");
+                exit(1);
+            }
+            println!("[+] Update Success.");
+            exit(0);
+        });
+    });
+
 }
 
-fn write_packet(uart:&mut Box<dyn SerialPort>,pkt:&Packet)->bool{
+fn create_firmware_length_packet(length:usize)->Packet{
+    let mut reply_payload:[u8;4] = [0;4];
+    // reply_payload[0] = FU_PACKET_FW_LENGTH_RESP_BYTE0;
+    let length_bytes = length.to_le_bytes();
+    reply_payload[0] = length_bytes[0];
+    reply_payload[1] = length_bytes[1];
+    reply_payload[2] = length_bytes[2];
+    reply_payload[3] = length_bytes[3];
+    return Packet::new(reply_payload.len() as u8,&reply_payload);
+}
+
+fn wait_for_cntrl_packet(packets_queue:&Mutex<VecDeque<Packet>>, value:u8, timeout:u32) -> bool  {
+    let mut iterations:u32 = 0;
+    while iterations < timeout {
+        sleep(Duration::from_millis(100));
+        let mut queue = packets_queue.lock().unwrap();
+        if  queue.len() > 0{
+            let pkt = queue.pop_front().unwrap();
+            // println!("checking packt={:?}",pkt.as_bytes());
+            if pkt.is_cntrl_packet(value){
+                // println!("check true");
+                return true;
+            }
+                // println!("check false");
+        }
+        iterations += 100;
+    }
+    return false;
+}
+
+fn sync_with_bootloader(uart:&Mutex<Box<dyn SerialPort>>, packets_queue:&Mutex<VecDeque<Packet>>, timeout:usize) -> bool  {
+    println!("[+] Syncing with bootloader");
+    let mut iterations:usize = 0;
+    while iterations < timeout {
+        match uart.lock().unwrap().write_all(&FU_SYNC_SEQ){
+            Ok(_) => {},
+            Err(e) => {
+                println!("[ERROR]:{}",e);
+                return false;
+            }
+        }
+        uart.lock().unwrap().flush().expect("[ERROR]: UART write failed!");
+        sleep(Duration::from_millis(10));
+        let mut queue = packets_queue.lock().unwrap();
+        if  queue.len() > 0{
+            let pkt = queue.pop_front().unwrap();
+            if pkt.is_cntrl_packet(FU_PACKET_SYN_OBSERVED_BYTE0){
+                return true;
+            }
+        }
+        iterations += 10;
+    }
+    return false;
+}
+
+fn parse_packet(data:&[u8]) -> Option<Packet> {
+    assert!(data.len() == 24);
+    let pkt = Packet::new(data[0],&data[1..20]);
+    let be_crc:[u8;4] = [data[20],data[21],data[22],data[23]];
+    let recvd_crc:u32 = u32::from_le_bytes(be_crc);
+
+    // Packet corrupted 
+    if pkt.crc != recvd_crc {
+        println!("CRC failed, computed {:#02x}, got {:#02x}",pkt.crc,recvd_crc);
+        return None;
+    }
+    return Some(pkt);
+}
+
+fn send_packet(uart_guard:&Mutex<Box<dyn SerialPort>>,
+    pkt:&Packet,
+    prev:&RwLock<Packet>) -> bool{
+    if write_packet(uart_guard, pkt){
+        prev.write().unwrap().replace(pkt);
+        return true;
+    }
+    return false;
+}
+
+
+fn write_packet(uart_guard:&Mutex<Box<dyn SerialPort>>,pkt:&Packet)->bool{
+    let mut uart = uart_guard.lock().unwrap();
     match uart.write_all(&pkt.as_bytes()){
         Ok(_) => {},
         Err(e) => {
