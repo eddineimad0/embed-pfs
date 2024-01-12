@@ -13,7 +13,7 @@
 
 #define FU_DEFAULT_TIMEOUT (5000)
 
-#define MAX_FW_LENGTH  (5*1024U)
+#define MAX_FW_LENGTH  (10*1024U)
 #define FW_HASH_LENGTH  (32U)
 
 #define SYNC_SEQ_0 (0xDE)

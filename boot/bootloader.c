@@ -12,7 +12,6 @@
 #include<libopencm3/cm3/scb.h>
 
 #include"bootloader.h"
-#include"fw-update.h"
 
 
 typedef enum bl_state_t{
@@ -65,12 +64,12 @@ static void bl_erase_firmware(void){
 }
 
 static uint32_t bl_write_firmware(const uint8_t* firmware_data, const uint32_t size){
-    return flash_write(FIRMWARE_VECTOR_START, firmware_data, size);
+    return flash_write(FIRMWARE_INFO_START, firmware_data, size);
 }
 
 static void jump_to_firmware(void){
     typedef void(*reset_fn)(void);
-    uint32_t** firmware_reset_vector_entry = (uint32_t**)(FIRMWARE_VECTOR_START + sizeof(uint32_t));
+    uint32_t** firmware_reset_vector_entry = (uint32_t**)(FIRMWARE_ISR_VECTOR_START + sizeof(uint32_t));
     uint32_t* firmware_reset_fn_address = (*firmware_reset_vector_entry);
     reset_fn firware_reset = (reset_fn)(firmware_reset_fn_address);
     setup_firmware_vector();
@@ -78,11 +77,10 @@ static void jump_to_firmware(void){
 }
 
 
-static void read_firmware_info(const uint8_t* restrict firmware_data, const uint32_t data_len, FirmwareInfo* info){
-    const uint32_t fw_info_offset = data_len - FWINFO_SIZE;
-    info->version = read32_from_le_bytes(&firmware_data[fw_info_offset + FWINFO_VERSION_OFFSET]);
-    info->size = read32_from_le_bytes(&firmware_data[fw_info_offset + FWINFO_SIZE_OFFSET]);
-    m_memcpy(&firmware_data[fw_info_offset + FWINFO_SIGNATURE_OFFSET], info->signature, FWINFO_SIGNATURE_LENGTH);
+static void read_firmware_info(const uint8_t* restrict firmware_data, FirmwareInfo* info){
+    info->version = read32_from_le_bytes(&firmware_data[FWINFO_VERSION_OFFSET]);
+    info->size = read32_from_le_bytes(&firmware_data[FWINFO_SIZE_OFFSET]);
+    m_memcpy(&firmware_data[FWINFO_SIGNATURE_OFFSET], info->signature, FWINFO_SIGNATURE_LENGTH);
 }
 
 static void calculate_firmware_hash(const uint8_t* firmware_data,const uint32_t firmware_size, uint8_t* output){
@@ -161,7 +159,6 @@ static void check_for_firmware_update(){
                         Packet_create_single_byte(&pkt, FU_PACKET_UP_RESP_BYTE0);
                         comms_write(&pkt);
                         state = BL_FWLengthReq;
-                        /* Timer_reset(&t); */
                         continue;
                     }else{
                         fw_update_fail(&pkt);
@@ -220,14 +217,14 @@ static void check_for_firmware_update(){
                 }
             }break;
             case BL_CheckSignature:{
-                read_firmware_info(fw_buffer,bytes_written,&fwinfo);
+                read_firmware_info(fw_buffer, &fwinfo);
                 if(fwinfo.size >= (MAX_FW_LENGTH - FWINFO_SIZE)){
                     fw_update_fail(&pkt);
                     state = BL_Timeout;
                 }
-                calculate_firmware_hash(fw_buffer,fwinfo.size,fw_hash);
+                calculate_firmware_hash(&fw_buffer[FWINFO_SIZE], fwinfo.size, fw_hash);
 
-                if(verify_firmware_signature(&fwinfo,fw_hash)){
+                if(verify_firmware_signature(&fwinfo, fw_hash)){
                     Packet_create_single_byte(&pkt, FU_PACKET_UPDATE_SUCCESS_BYTE0);
                     comms_write(&pkt);
                     state = BL_UpdateFW;

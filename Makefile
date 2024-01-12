@@ -112,7 +112,6 @@ LD_LIBS	+= -Wl,--start-group -lc -lgcc -lnosys -Wl,--end-group
 ###############################################################################
 ###############################################################################
 ###############################################################################
-$(info [+] $(CFILES))
 
 all: firmware update
 
@@ -128,6 +127,12 @@ bootloader: $(BIN_DIR)/bootloader.bin
 firmware: $(BIN_DIR)/firmware.bin
 
 update: $(BIN_DIR)/update.bin
+
+$(OBJ_DIR)/util/uECC.o:util/uECC.c
+	$(Q)$(DIR_GUARD)
+	$(Q)$(CC)                   \
+	$(CPPFLAGS)                 \
+	-Wall -Wextra -Wshadow -mfloat-abi=soft -std=c99 -Os -mthumb -mcpu=cortex-m3 -c $< -o $@
 
 $(OBJ_DIR)/%.o:%.c
 	$(Q)$(DIR_GUARD)
@@ -152,13 +157,13 @@ $(BIN_DIR)/firmware.bin:$(BIN_DIR)/firmware.elf
 
 $(BIN_DIR)/firmware.elf: $(OBJS) $(BOOT_OBJS) $(DRIVERS_OBJS) $(UTIL_OBJS) $(BOOT_LDSCRIPT) $(OPENCM3_DIR)/lib/lib$(LIBNAME).a Makefile
 	$(Q)$(DIR_GUARD)
+	$(Q)$(CC) $(CPPFLAGS) $(CFLAGS) -c firmware/bootloader-section.S -o $(OBJ_DIR)/firmware/bootloader-section.o
 	$(Q)$(LD) $(LDFLAGS) -T$(BOOT_LDSCRIPT) $(OBJS) $(DRIVERS_OBJS) $(UTIL_OBJS) $(LD_LIBS) -o $@ 
 
 $(BIN_DIR)/bootloader.bin: $(BIN_DIR)/bootloader.elf
 	$(Q)$(DIR_GUARD)
 	$(Q)$(OBJCOPY) -Obinary $< $@
 	$(Q)python3 $(BOOT_PAD_SCRIPT) 
-	$(Q)$(CC) $(CPPFLAGS) $(CFLAGS) -c firmware/bootloader-section.S -o $(OBJ_DIR)/firmware/bootloader-section.o
 
 $(BIN_DIR)/bootloader.elf: $(BOOT_OBJS) $(DRIVERS_OBJS) $(UTIL_OBJS) $(LDSCRIPT) $(OPENCM3_DIR)/lib/lib$(LIBNAME).a Makefile
 	$(Q)$(DIR_GUARD)

@@ -1,7 +1,11 @@
 /* Define memory regions. */
 MEMORY
 {
-        /*64K is available but we want to warn us if we go beyond 16K for the bootloader*/
+        /* The linker should offset address by 0x08004048,
+         * 0x4000 for the bootloader on the microcontroller
+         * and 0x48 for the firmware infos that will be added
+         * to the begining of the update binary.
+         * */
 	FLASH 	 (rx)  : ORIGIN = 0x08004000, LENGTH = 48K 
 	SRAM 	 (rwx) : ORIGIN = 0x20000000, LENGTH = 20K
 }

@@ -37,6 +37,6 @@ signature = sign_firmware(key_pem, update_data)
 firmware_info = struct.pack("<LL", update_version, update_size)
 
 with open(UPDATE_FILE + ".signed", "wb") as f:
-    f.write(update_data)
     f.write(firmware_info)
     f.write(signature)
+    f.write(update_data)

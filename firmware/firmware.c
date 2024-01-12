@@ -22,6 +22,7 @@ int main() {
     firmware_init();
 
     while(true){
+        systick_delay(1000);
         gpio_toggle(LED_PORT,LED_PIN);
     }
 
