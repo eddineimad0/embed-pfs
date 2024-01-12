@@ -93,11 +93,11 @@ static void calculate_firmware_hash(const uint8_t* firmware_data,const uint32_t 
 }
 
 static bool verify_firmware_signature(const FirmwareInfo* info, const uint8_t* fw_hash){
-    uint8_t binary_pub_key[VERIFYING_KEY_LEN]; 
+    uint8_t binary_pub_key[VERIFYING_KEY_LENGTH]; 
     uint32_t key_length = bytes_len((const uint8_t*)VERIFYING_KEY);
     uint32_t output_length = 0;
 
-    if(!b64decode(VERIFYING_KEY, key_length , binary_pub_key, VERIFYING_KEY_LEN, &output_length)){
+    if(!b64decode(VERIFYING_KEY, key_length , binary_pub_key, VERIFYING_KEY_LENGTH, &output_length)){
         // Failed to decode public key fail the verification.
         return false;
     }

@@ -16,9 +16,15 @@ with open("./keys/verifying.pem", "wb") as pub:
 # Generate the c include file.
 
 with open("./boot/key/verify.inc", "wb") as f:
+    encoded_key = base64.b64encode(vk.to_string())
+    size = len(vk.to_string())
+    macro_size = "{}".format(size)
     f.write(b'static const char* VERIFYING_KEY="')
-    f.write(base64.b64encode(vk.to_string()))
-    f.write(b'";')
+    f.write(encoded_key)
+    f.write(b'";\n')
+    f.write(b'#define VERIFYING_KEY_LENGTH (')
+    f.write(bytes(macro_size, "ascii"))
+    f.write(b')')
 
 
 print("Done.")

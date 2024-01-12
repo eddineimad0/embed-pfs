@@ -24,7 +24,4 @@
 // Verifying key
 #include "key/verify.inc"
 
-#define VERIFYING_KEY_LEN 64
-
-
 #endif // !INC_FW_UPDATE_H
