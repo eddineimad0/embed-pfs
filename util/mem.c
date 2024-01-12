@@ -30,3 +30,13 @@ uint32_t read32_from_le_bytes(const uint8_t* bytes){
             );
 }
 
+uint32_t bytes_len(const uint8_t* bytes){
+    uint32_t count = 0;
+
+    while(*bytes != 0x00){
+        bytes += 1;
+        count += 1;
+    }
+
+    return count;
+}

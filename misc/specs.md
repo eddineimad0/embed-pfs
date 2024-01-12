@@ -42,3 +42,9 @@ STM32F103C8T6 microcontroller.
     ### Control datagramme
     ACK: length=1 , 1st Byte = 0xAC
     Retransmit: length=1 , 1st Byte = 0xAB
+
+
+## Firmware Info section
+- Firmware version: 4 bytes.
+- Firmware size: 4 bytes.
+- Firmware signature: 64 bytes. 

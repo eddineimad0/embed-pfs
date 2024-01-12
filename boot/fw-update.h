@@ -1,5 +1,6 @@
 #ifndef INC_FW_UPDATE_H
 #define INC_FW_UPDATE_H
+#include<common.h>
 
 // Choosen randomly
 #define FU_PACKET_SYN_OBSERVED_BYTE0 (0x01)
@@ -13,8 +14,17 @@
 #define FU_DEFAULT_TIMEOUT (5000)
 
 #define MAX_FW_LENGTH  (5*1024U)
-#define FW_HASH_LENGTH  (20)
+#define FW_HASH_LENGTH  (32U)
 
+#define SYNC_SEQ_0 (0xDE)
+#define SYNC_SEQ_1 (0xAD)
+#define SYNC_SEQ_2 (0xBA)
+#define SYNC_SEQ_3 (0xBE)
+
+// Verifying key
+#include "key/verify.inc"
+
+#define VERIFYING_KEY_LEN 64
 
 
 #endif // !INC_FW_UPDATE_H

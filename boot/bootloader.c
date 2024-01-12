@@ -1,23 +1,19 @@
 #include<common.h>
-#include<bootloader.h>
 #include<systick.h>
 #include<comms.h>
 #include<uart.h>
 #include<flash-controller.h>
 #include<timer.h>
 #include<mem.h>
-#include<sha1.h>
-#include<hmac.h>
+#include<sha256.h>
+#include<base64.h>
+#include<uECC.h>
 #include<libopencm3/stm32/rcc.h>
 #include<libopencm3/cm3/scb.h>
 
-#include "fw-update.h"
+#include"bootloader.h"
+#include"fw-update.h"
 
-
-#define SYNC_SEQ_0 (0xDE)
-#define SYNC_SEQ_1 (0xAD)
-#define SYNC_SEQ_2 (0xBA)
-#define SYNC_SEQ_3 (0xBE)
 
 typedef enum bl_state_t{
     BL_Sync,
@@ -32,13 +28,10 @@ typedef enum bl_state_t{
     BL_FWSwitch,
 }BLState;
 
-static uint8_t sync_seq[4] = {0};
-static uint8_t calculated_firmware_hash[FW_HASH_LENGTH] = {0};
-static uint8_t hmac_result[FW_HASH_LENGTH] = {0};
-static uint8_t pub_key[4] = {0xAD,0xDE,0xDE,0x0D};
+static FirmwareInfo fwinfo;
 
 static void setup_firmware_vector(void){
-    SCB_VTOR = BOOTLOADER_SIZE;
+    SCB_VTOR = (BOOTLOADER_SIZE);
 }
 
 static void boot_wake_up(void){
@@ -71,8 +64,8 @@ static void bl_erase_firmware(void){
     flash_erase_section(FIRMWARE_START_PAGE, FIRMWARE_END_PAGE + 1);
 }
 
-static uint32_t bl_write_firmware(const uint8_t* firmware_data, const uint32_t size,const uint32_t offset){
-    return flash_write(FIRMWARE_VECTOR_START + offset, firmware_data, size);
+static uint32_t bl_write_firmware(const uint8_t* firmware_data, const uint32_t size){
+    return flash_write(FIRMWARE_VECTOR_START, firmware_data, size);
 }
 
 static void jump_to_firmware(void){
@@ -84,19 +77,43 @@ static void jump_to_firmware(void){
     firware_reset();
 }
 
-static void calculate_sha1(const uint8_t* msg, unsigned nbytes, uint8_t* output)
-{
-  struct sha1 ctx;
-  sha1_reset(&ctx);
-  sha1_input(&ctx, msg, nbytes);
-  sha1_result(&ctx, output);
+
+static void read_firmware_info(const uint8_t* restrict firmware_data, const uint32_t data_len, FirmwareInfo* info){
+    const uint32_t fw_info_offset = data_len - FWINFO_SIZE;
+    info->version = read32_from_le_bytes(&firmware_data[fw_info_offset + FWINFO_VERSION_OFFSET]);
+    info->size = read32_from_le_bytes(&firmware_data[fw_info_offset + FWINFO_SIZE_OFFSET]);
+    m_memcpy(&firmware_data[fw_info_offset + FWINFO_SIGNATURE_OFFSET], info->signature, FWINFO_SIGNATURE_LENGTH);
 }
+
+static void calculate_firmware_hash(const uint8_t* firmware_data,const uint32_t firmware_size, uint8_t* output){
+    ecdsa_sha256_context_t ctx;
+    ecdsa_sha256_init(&ctx);
+    ecdsa_sha256_update(&ctx,firmware_data,firmware_size);
+    ecdsa_sha256_final(&ctx,output);
+}
+
+static bool verify_firmware_signature(const FirmwareInfo* info, const uint8_t* fw_hash){
+    uint8_t binary_pub_key[VERIFYING_KEY_LEN]; 
+    uint32_t key_length = bytes_len((const uint8_t*)VERIFYING_KEY);
+    uint32_t output_length = 0;
+
+    if(!b64decode(VERIFYING_KEY, key_length , binary_pub_key, VERIFYING_KEY_LEN, &output_length)){
+        // Failed to decode public key fail the verification.
+        return false;
+    }
+
+    uECC_Curve curve = uECC_secp256k1();
+    return uECC_verify(binary_pub_key, fw_hash, FW_HASH_LENGTH, info->signature, curve) == 1;
+}
+
 
 static void check_for_firmware_update(){
     Timer t;
     Packet pkt;
     BLState state = BL_Sync;
     uint8_t fw_buffer[MAX_FW_LENGTH] = {0};
+    uint8_t fw_hash[FW_HASH_LENGTH] = {0};
+    uint8_t sync_seq[4] = {0};
     uint32_t fw_length = 0;
     uint32_t bytes_written = 0;
     Timer_setup(&t, FU_DEFAULT_TIMEOUT, false);
@@ -166,7 +183,7 @@ static void check_for_firmware_update(){
                 if(comms_is_packet_available()){
                     comms_read(&pkt);
                     fw_length = read32_from_le_bytes(&pkt.data[0]); 
-                    if(fw_length <= MAX_FW_LENGTH){
+                    if(fw_length <= MAX_FW_LENGTH && fw_length >= FWINFO_SIZE ){
                         Packet_create_single_byte(&pkt, FU_PACKET_READY_FOR_FW_BYTE0);
                         comms_write(&pkt);
                         state = BL_ReceiveFW;
@@ -186,14 +203,10 @@ static void check_for_firmware_update(){
             case BL_ReceiveFW:{
                 if(comms_is_packet_available()){
                     comms_read(&pkt);
-                    // Signature check.
-                    //
-                    /* bytes_written = bl_write_firmware(pkt.data,pkt.length,bytes_written); */
                     m_memcpy(pkt.data, &fw_buffer[bytes_written], pkt.length);
                     bytes_written += pkt.length;
                     if(bytes_written >= fw_length){
-                        /* state = BL_CheckSignature; */
-                        state = BL_UpdateFW;
+                        state = BL_CheckSignature;
                     }else{
                         Packet_create_single_byte(&pkt, FU_PACKET_READY_FOR_FW_BYTE0);
                         comms_write(&pkt);
@@ -207,23 +220,30 @@ static void check_for_firmware_update(){
                 }
             }break;
             case BL_CheckSignature:{
-                calculate_sha1(&fw_buffer[FW_HASH_LENGTH],bytes_written - FW_HASH_LENGTH,calculated_firmware_hash);
-                hmac_sha1(pub_key, 4,fw_buffer, FW_HASH_LENGTH, hmac_result);
-                if(m_memcmp(calculated_firmware_hash,hmac_result , FW_HASH_LENGTH) == 0){
+                read_firmware_info(fw_buffer,bytes_written,&fwinfo);
+                if(fwinfo.size >= (MAX_FW_LENGTH - FWINFO_SIZE)){
+                    fw_update_fail(&pkt);
+                    state = BL_Timeout;
+                }
+                calculate_firmware_hash(fw_buffer,fwinfo.size,fw_hash);
+
+                if(verify_firmware_signature(&fwinfo,fw_hash)){
+                    Packet_create_single_byte(&pkt, FU_PACKET_UPDATE_SUCCESS_BYTE0);
+                    comms_write(&pkt);
                     state = BL_UpdateFW;
                 }else{
                     fw_update_fail(&pkt);
+                    state = BL_Timeout;
                 }
+                continue;
             }break;
             case BL_UpdateFW:{
                 bl_erase_firmware();
-                bl_write_firmware(fw_buffer, bytes_written,0);
+                bl_write_firmware(fw_buffer, bytes_written);
                 state = BL_Done;
                 continue;
             }break;
             case BL_Done:{
-                Packet_create_single_byte(&pkt, FU_PACKET_UPDATE_SUCCESS_BYTE0);
-                comms_write(&pkt);
                 return;
             }break;
             default:{
@@ -232,6 +252,12 @@ static void check_for_firmware_update(){
         }
     }
 }
+
+/* static void infinite_loop(){ */
+/*     while(true){ */
+/*         __asm__("nop"); */
+/*     } */
+/* } */
 
 
 int main(void){

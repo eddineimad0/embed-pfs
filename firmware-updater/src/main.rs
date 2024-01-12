@@ -1,5 +1,4 @@
 use std::collections::VecDeque;
-use std::env;
 use std::fs;
 use std::iter;
 use std::process::exit;
@@ -33,8 +32,6 @@ const FU_PACKET_READY_FOR_FW_BYTE0:u8 = 0x02;
 const FU_PACKET_UPDATE_SUCCESS_BYTE0:u8 = 0x04;
 
 const FU_SYNC_SEQ:[u8;4] = [0xDE,0xAD,0xBA,0xBE];
-
-const BOOTLOADER_SIZE:usize = 0x4000;
 
 #[derive(Clone)]
 struct Packet{
@@ -115,12 +112,11 @@ impl From<u8> for Packet {
 
 
 fn main() {
-    let fw_update_path = "./fw-image/firmware.bin";
+    let fw_update_path = "./fw-image/update.bin.signed";
 
     let fw_data = fs::read(fw_update_path).unwrap();
-    let final_data:Vec<u8> = fw_data.into_iter().skip(BOOTLOADER_SIZE).collect();
 
-    let progress = ProgressBar::new(final_data.len() as u64);
+    let progress = ProgressBar::new(fw_data.len() as u64);
     progress.set_style(ProgressStyle::with_template("[{bar:40.cyan/blue}] {percent}%")
         .unwrap()
         .progress_chars("#>-"));
@@ -162,9 +158,9 @@ fn main() {
         exit(1);
     }
     println!("[+] Bootloader requested firmware length");
-    reply = create_firmware_length_packet(final_data.len());
+    reply = create_firmware_length_packet(fw_data.len());
     send_packet(&mut uart, &reply, &mut prev_packet);
-    println!("[+] Responding with {}Kib",final_data.len());
+    println!("[+] Responding with {} bytes",fw_data.len());
     result = wait_for_cntrl_packet(&mut uart,&mut packets_queue, &mut prev_packet, FU_PACKET_READY_FOR_FW_BYTE0, 5000);
     if !result {
         println!("[-] Update Timeout!!");
@@ -172,24 +168,23 @@ fn main() {
     }
     let mut bytes_sent:usize = 0;
     println!("[+] Sending Firmware");
-    while bytes_sent < final_data.len() {
-        let increment = if final_data.len() - bytes_sent > PACKET_DATA_BYTES as usize {
+    while bytes_sent < fw_data.len() {
+        let increment = if fw_data.len() - bytes_sent > PACKET_DATA_BYTES as usize {
             PACKET_DATA_BYTES as usize
         }else{
-            final_data.len() - bytes_sent
+            fw_data.len() - bytes_sent
         };
 
-        let data_bytes = &final_data[bytes_sent..(bytes_sent + increment)];
+        let data_bytes = &fw_data[bytes_sent..(bytes_sent + increment)];
         let data_pkt = Packet::new(increment as u8, data_bytes);
         send_packet(&mut uart, &data_pkt, &mut prev_packet);
-        if bytes_sent + increment < final_data.len(){
+        if bytes_sent + increment < fw_data.len(){
             if !wait_for_cntrl_packet(&mut uart,&mut packets_queue,&mut prev_packet, FU_PACKET_READY_FOR_FW_BYTE0, 5000){
                 println!("[-] Update Failure!!");
                 exit(0);
             }
         }
         bytes_sent += increment;
-        // println!("[+] Wrote {} bytes of firmware {:.2}%",bytes_sent,(bytes_sent as f32/final_data.len() as f32)*100.0);
         progress.set_position(bytes_sent as u64);
     }
     result = wait_for_cntrl_packet(&mut uart,&mut packets_queue,&mut prev_packet, FU_PACKET_UPDATE_SUCCESS_BYTE0, 5000);

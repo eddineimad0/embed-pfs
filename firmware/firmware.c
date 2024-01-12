@@ -16,18 +16,13 @@ static void firmware_init(){
     rcc_clock_setup_pll(&rcc_hsi_configs[RCC_CLOCK_HSI_64MHZ]);
     systick_setup();
     gpio_setup();
-    uart_setup();
 }
 
 int main() {
     firmware_init();
 
     while(true){
-        systick_delay(100);
-        if(uart_data_available()){
-            gpio_toggle(LED_PORT,LED_PIN);
-            (void)uart_read_byte();
-        }
+        gpio_toggle(LED_PORT,LED_PIN);
     }
 
     return 0;
