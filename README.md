@@ -82,6 +82,22 @@ The bootloader uses a state machine that works in the following way:
 6. If it isn't verifed we discard the firmware data and proceed with step 2
 
 
+# Commands
+The following command can be used to build the bootloader:
+
+```bash
+make bootloader
+```
+The following command can be used to build a signed firmware image:
+
+```bash
+make update <version-number>
+```
+
+the version number should start with 1 and be incremented for every new version you want to install.
+
+
+
 # Notice
 The various libraries used in this project were not checked for secuirty issues.
 and should be vetted before using this in production.
