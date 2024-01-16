@@ -22,12 +22,12 @@ typedef enum bl_state_t{
     BL_ReceiveFW,
     BL_CheckSignature,
     BL_UpdateFW,
-    BL_Timeout,
-    BL_Done,
-    BL_FWSwitch,
+    BL_UpdateTimeout,
+    BL_UpdateSuccess,
+    BL_UpdateFailure,
+    BL_SwitchToApplication,
+    BL_VerifyApplication,
 }BLState;
-
-static FirmwareInfo fwinfo;
 
 static void setup_firmware_vector(void){
     SCB_VTOR = (BOOTLOADER_SIZE);
@@ -77,10 +77,10 @@ static void jump_to_firmware(void){
 }
 
 
-static void read_firmware_info(const uint8_t* restrict firmware_data, FirmwareInfo* info){
-    info->version = read32_from_le_bytes(&firmware_data[FWINFO_VERSION_OFFSET]);
-    info->size = read32_from_le_bytes(&firmware_data[FWINFO_SIZE_OFFSET]);
-    m_memcpy(&firmware_data[FWINFO_SIGNATURE_OFFSET], info->signature, FWINFO_SIGNATURE_LENGTH);
+static void read_firmware_info(const uint8_t* restrict firmware_info_data, FirmwareInfo* info){
+    info->version = read32_from_le_bytes(&firmware_info_data[FWINFO_VERSION_OFFSET]);
+    info->size = read32_from_le_bytes(&firmware_info_data[FWINFO_SIZE_OFFSET]);
+    m_memcpy(&firmware_info_data[FWINFO_SIGNATURE_OFFSET], info->signature, FWINFO_SIGNATURE_LENGTH);
 }
 
 static void calculate_firmware_hash(const uint8_t* firmware_data,const uint32_t firmware_size, uint8_t* output){
@@ -104,19 +104,34 @@ static bool verify_firmware_signature(const FirmwareInfo* info, const uint8_t* f
     return uECC_verify(binary_pub_key, fw_hash, FW_HASH_LENGTH, info->signature, curve) == 1;
 }
 
+/*
+ * Returns true if it can verify the signature of the firmware data in flash memory
+ * */
+static bool verify_firmware(const FirmwareInfo* info){
+    uint8_t fw_hash[FW_HASH_LENGTH] = {0};
+    uint8_t* firmware_data = (uint8_t*)FIRMWARE_ISR_VECTOR_START;
+    calculate_firmware_hash(firmware_data, info->size, fw_hash);
+    if(verify_firmware_signature(info, fw_hash)){
+        return true;
+    }else{
+        return false;
+    }
+}
 
-static void check_for_firmware_update(){
-    Timer t;
-    Packet pkt;
-    BLState state = BL_Sync;
+static void check_for_firmware_update(BLState* state,const FirmwareInfo* info){
     uint8_t fw_buffer[MAX_FW_LENGTH] = {0};
     uint8_t fw_hash[FW_HASH_LENGTH] = {0};
     uint8_t sync_seq[4] = {0};
     uint32_t fw_length = 0;
     uint32_t bytes_written = 0;
+    Timer t;
+    Packet pkt;
+    FirmwareInfo update_info;
+
+    *state = BL_Sync;
     Timer_setup(&t, FU_DEFAULT_TIMEOUT, false);
     while(true){
-        if(state == BL_Sync){
+        if(*state == BL_Sync){
             if(uart_data_available()){
                 sync_seq[0] = sync_seq[1];
                 sync_seq[1] = sync_seq[2];
@@ -134,45 +149,45 @@ static void check_for_firmware_update(){
                     }
                     Packet_create_single_byte(&pkt, FU_PACKET_SYN_OBSERVED_BYTE0);
                     comms_write(&pkt);
-                    state = BL_WaitingForUpdateReq;
+                    *state = BL_WaitingForUpdateReq;
                     Timer_reset(&t);
                     continue;
                 }else{
                     if(check_for_timeout(&t,&pkt)){
-                        state = BL_Timeout;
+                        *state = BL_UpdateTimeout;
                     }
                 }
             }else{
                 if(check_for_timeout(&t,&pkt)){
-                    state = BL_Timeout;
+                    *state = BL_UpdateTimeout;
                 }
             }
             continue;
         }
 
         comms_update();
-        switch(state){
+        switch(*state){
             case BL_WaitingForUpdateReq:{
                 if(comms_is_packet_available()){
                     comms_read(&pkt);
                     if(Packet_is_cntrl(&pkt, FU_PACKET_UP_REQ_BYTE0)){
                         Packet_create_single_byte(&pkt, FU_PACKET_UP_RESP_BYTE0);
                         comms_write(&pkt);
-                        state = BL_FWLengthReq;
+                        *state = BL_FWLengthReq;
                         continue;
                     }else{
                         fw_update_fail(&pkt);
                     }
                 }else{
                     if(check_for_timeout(&t,&pkt)){
-                        state = BL_Timeout;
+                        *state = BL_UpdateTimeout;
                     }
                 }
             }break;
             case BL_FWLengthReq:{
                 Packet_create_single_byte(&pkt, FU_PACKET_FW_LENGTH_REQ_BYTE0);
                 comms_write(&pkt);
-                state = BL_FWLengthRes;
+                *state = BL_FWLengthRes;
                 Timer_reset(&t);
                 continue;
             }break;
@@ -183,16 +198,16 @@ static void check_for_firmware_update(){
                     if(fw_length <= MAX_FW_LENGTH && fw_length >= FWINFO_SIZE ){
                         Packet_create_single_byte(&pkt, FU_PACKET_READY_FOR_FW_BYTE0);
                         comms_write(&pkt);
-                        state = BL_ReceiveFW;
+                        *state = BL_ReceiveFW;
                         Timer_reset(&t);
                         continue;
                     }else{
                         fw_update_fail(&pkt);
-                        state = BL_Done;
+                        *state = BL_UpdateFailure;
                     }
                 }else{
                     if(check_for_timeout(&t,&pkt)){
-                        state = BL_Timeout;
+                        *state = BL_UpdateTimeout;
                     }
                 }
                 
@@ -203,7 +218,7 @@ static void check_for_firmware_update(){
                     m_memcpy(pkt.data, &fw_buffer[bytes_written], pkt.length);
                     bytes_written += pkt.length;
                     if(bytes_written >= fw_length){
-                        state = BL_CheckSignature;
+                        *state = BL_CheckSignature;
                     }else{
                         Packet_create_single_byte(&pkt, FU_PACKET_READY_FOR_FW_BYTE0);
                         comms_write(&pkt);
@@ -212,56 +227,69 @@ static void check_for_firmware_update(){
                     continue;
                 }else{
                     if(check_for_timeout(&t,&pkt)){
-                        state = BL_Timeout;
+                        *state = BL_UpdateTimeout;
                     }
                 }
             }break;
             case BL_CheckSignature:{
-                read_firmware_info(fw_buffer, &fwinfo);
-                if(fwinfo.size >= (MAX_FW_LENGTH - FWINFO_SIZE)){
+                read_firmware_info(fw_buffer, &update_info);
+                if(update_info.size >= (MAX_FW_LENGTH - FWINFO_SIZE) || update_info.version <= info->version){
                     fw_update_fail(&pkt);
-                    state = BL_Timeout;
+                    *state = BL_UpdateFailure;
+                    continue;
                 }
-                calculate_firmware_hash(&fw_buffer[FWINFO_SIZE], fwinfo.size, fw_hash);
-
-                if(verify_firmware_signature(&fwinfo, fw_hash)){
+                calculate_firmware_hash(&fw_buffer[FWINFO_SIZE], update_info.size, fw_hash);
+                if(verify_firmware_signature(&update_info, fw_hash)){
                     Packet_create_single_byte(&pkt, FU_PACKET_UPDATE_SUCCESS_BYTE0);
                     comms_write(&pkt);
-                    state = BL_UpdateFW;
+                    *state = BL_UpdateFW;
                 }else{
                     fw_update_fail(&pkt);
-                    state = BL_Timeout;
+                    *state = BL_UpdateFailure;
                 }
                 continue;
             }break;
             case BL_UpdateFW:{
                 bl_erase_firmware();
                 bl_write_firmware(fw_buffer, bytes_written);
-                state = BL_Done;
+                *state = BL_UpdateSuccess;
                 continue;
             }break;
-            case BL_Done:{
+            case BL_UpdateSuccess:{
+                *state = BL_SwitchToApplication;
                 return;
             }break;
             default:{
+                *state = BL_VerifyApplication;
                 return;
             }break;
         }
     }
 }
 
-/* static void infinite_loop(){ */
-/*     while(true){ */
-/*         __asm__("nop"); */
-/*     } */
-/* } */
+static void infinite_loop(void){
+    while(true){
+        __asm__("nop");
+    }
+}
 
 
 int main(void){
     boot_wake_up();
-    check_for_firmware_update();
-
-    systick_delay(200);
+    BLState boot_state = BL_VerifyApplication;
+    FirmwareInfo finfo;
+    uint8_t* firmware_info_data = (uint8_t*)(FIRMWARE_ISR_VECTOR_START - FWINFO_SIZE); 
+    read_firmware_info(firmware_info_data, &finfo);
+    check_for_firmware_update(&boot_state,&finfo);
+    if(boot_state == BL_VerifyApplication){
+        if(!verify_firmware(&finfo)){
+            // Firmware corrupted or not singed.
+            // loop forever;
+            infinite_loop();
+        }else{
+            boot_state = BL_SwitchToApplication;
+        }
+    }
     boot_cleanup();
     jump_to_firmware();
     return 0; 
