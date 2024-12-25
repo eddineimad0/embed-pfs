@@ -1,1 +1,6 @@
-*.php linguist-vendored=true
+* linguist-vendored
+*.c linguist-vendored=fase
+*.h linguist-vendored=fase
+*.cpp linguist-vendored=fase
+*.py linguist-vendored=fase
+*.rs linguist-vendored=fase
